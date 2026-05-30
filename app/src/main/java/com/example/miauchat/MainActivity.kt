@@ -2,10 +2,15 @@ package com.example.miauchat
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.net.Uri
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,10 +23,15 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +42,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -56,7 +67,8 @@ import java.util.concurrent.TimeUnit
 
 data class LogEntry(
     val sender: String,
-    val content: String
+    val content: String,
+    val reasoning: String = ""
 )
 
 data class ChatSession(
@@ -71,6 +83,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     var apiKey by mutableStateOf(prefs.getString("api_key", "") ?: "")
     var apiModel by mutableStateOf(prefs.getString("api_model", "") ?: "")
 
+    var exaApiKey by mutableStateOf(prefs.getString("exa_api_key", "") ?: "")
+    var exaSearchEnabled by mutableStateOf(false)
+
     var isConnected by mutableStateOf(apiUrl.isNotEmpty() && apiKey.isNotEmpty() && apiModel.isNotEmpty())
     val chatLogs = mutableStateListOf<LogEntry>()
     var currentInput by mutableStateOf("")
@@ -78,6 +93,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     var showConfigDialog by mutableStateOf(false)
     var showHistoryDialog by mutableStateOf(false)
     var streamingContent by mutableStateOf("")
+    var streamingReasoning by mutableStateOf("")
     var sessions = mutableStateListOf<ChatSession>()
 
     private var generationJob: Job? = null
@@ -105,10 +121,23 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         showConfigDialog = false
     }
 
+    fun saveExaConfiguration(key: String) {
+        exaApiKey = key
+        prefs.edit().putString("exa_api_key", key).apply()
+        if (key.isNotEmpty()) exaSearchEnabled = true
+    }
+
+    fun toggleExaSearch() {
+        exaSearchEnabled = !exaSearchEnabled
+    }
+
     fun saveCurrentSession() {
         if (chatLogs.isEmpty()) return
         val label = chatLogs.firstOrNull { it.sender == "USER" }?.content?.take(50) ?: "Chat"
-        sessions.add(0, ChatSession(label, chatLogs.toList()))
+        val session = ChatSession(label, chatLogs.toList())
+        val existing = sessions.indexOfFirst { it.label == label }
+        if (existing >= 0) sessions[existing] = session
+        else sessions.add(0, session)
         persistSessions()
     }
 
@@ -140,7 +169,11 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 val logs = mutableListOf<LogEntry>()
                 for (j in 0 until logsArr.length()) {
                     val logObj = logsArr.getJSONObject(j)
-                    logs.add(LogEntry(logObj.getString("sender"), logObj.getString("content")))
+                    logs.add(LogEntry(
+                        logObj.getString("sender"),
+                        logObj.getString("content"),
+                        logObj.optString("reasoning", "")
+                    ))
                 }
                 sessions.add(ChatSession(label, logs))
             }
@@ -155,6 +188,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 logsArr.put(JSONObject().apply {
                     put("sender", l.sender)
                     put("content", l.content)
+                    if (l.reasoning.isNotEmpty()) put("reasoning", l.reasoning)
                 })
             }
             arr.put(JSONObject().apply {
@@ -188,9 +222,11 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         val aiEntryIndex = chatLogs.size
         chatLogs.add(LogEntry("AI", ""))
         streamingContent = ""
+        streamingReasoning = ""
 
         generationJob = viewModelScope.launch(Dispatchers.IO) {
             var fullContent = ""
+            var fullReasoning = ""
             try {
                 val jsonBody = JSONObject().apply {
                     put("model", apiModel)
@@ -220,6 +256,29 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         }
                     )
                     put("messages", messagesArray)
+                    if (exaSearchEnabled) {
+                        put("tools", JSONArray().apply {
+                            put(JSONObject().apply {
+                                put("type", "function")
+                                put("function", JSONObject().apply {
+                                    put("name", "web_search")
+                                    put("description", "Search the web for current information. Use this when you need up-to-date facts, news, or information beyond your training data.")
+                                    put("parameters", JSONObject().apply {
+                                        put("type", "object")
+                                        put("properties", JSONObject().apply {
+                                            put("query", JSONObject().apply {
+                                                put("type", "string")
+                                                put("description", "The search query")
+                                            })
+                                        })
+                                        put("required", JSONArray().apply {
+                                            put("query")
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    }
                 }
 
                 val request = Request.Builder()
@@ -247,6 +306,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
                 var isStreaming = false
                 var line: String?
+                var toolCallId: String? = null
+                var toolCallFunctionName: String? = null
+                val toolCallArgsBuilder = StringBuilder()
 
                 while (reader.readLine().also { line = it } != null) {
                     val currentLine = line ?: continue
@@ -258,14 +320,38 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                             val json = JSONObject(data)
                             val choices = json.optJSONArray("choices")
                             if (choices != null && choices.length() > 0) {
-                                val delta = choices.getJSONObject(0).optJSONObject("delta")
+                                val choice = choices.getJSONObject(0)
+                                val delta = choice.optJSONObject("delta")
+
+                                val tcArray = delta?.optJSONArray("tool_calls")
+                                if (tcArray != null && tcArray.length() > 0) {
+                                    val tc = tcArray.getJSONObject(0)
+                                    if (tc.has("id")) toolCallId = tc.getString("id")
+                                    if (tc.has("function")) {
+                                        val fn = tc.getJSONObject("function")
+                                        if (fn.has("name")) toolCallFunctionName = fn.getString("name")
+                                        if (fn.has("arguments")) toolCallArgsBuilder.append(fn.getString("arguments"))
+                                    }
+                                }
+
                                 if (delta != null && delta.has("content") && !delta.isNull("content")) {
                                     val chunk = delta.getString("content")
                                     fullContent += chunk
                                     withContext(Dispatchers.Main) {
                                         streamingContent = fullContent
-                                        chatLogs[aiEntryIndex] = LogEntry("AI", fullContent)
+                                        chatLogs[aiEntryIndex] = LogEntry("AI", fullContent, fullReasoning)
                                     }
+                                }
+                                if (delta != null && delta.has("reasoning_content") && !delta.isNull("reasoning_content")) {
+                                    fullReasoning += delta.getString("reasoning_content")
+                                    withContext(Dispatchers.Main) {
+                                        streamingReasoning = fullReasoning
+                                        chatLogs[aiEntryIndex] = LogEntry("AI", fullContent, fullReasoning)
+                                    }
+                                }
+
+                                if (choice.optString("finish_reason") == "tool_calls") {
+                                    break
                                 }
                             }
                         } catch (_: Exception) { }
@@ -275,22 +361,165 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 }
                 reader.close()
 
+                if (toolCallId != null && toolCallFunctionName == "web_search") {
+                    val argsJson = JSONObject(toolCallArgsBuilder.toString())
+                    val searchQuery = argsJson.optString("query", messageToSend)
+                    val searchResults = exaSearch(searchQuery)
+
+                    val secondBody = JSONObject().apply {
+                        put("model", apiModel)
+                        put("stream", true)
+                        val messagesArray = JSONArray()
+                        for (i in 0 until aiEntryIndex) {
+                            val log = chatLogs[i]
+                            when (log.sender) {
+                                "USER" -> messagesArray.put(
+                                    JSONObject().apply { put("role", "user"); put("content", log.content) }
+                                )
+                                "AI" -> messagesArray.put(
+                                    JSONObject().apply { put("role", "assistant"); put("content", log.content) }
+                                )
+                            }
+                        }
+                        messagesArray.put(
+                            JSONObject().apply { put("role", "user"); put("content", messageToSend) }
+                        )
+                        messagesArray.put(
+                            JSONObject().apply {
+                                put("role", "assistant")
+                                put("tool_calls", JSONArray().apply {
+                                    put(JSONObject().apply {
+                                        put("id", toolCallId)
+                                        put("type", "function")
+                                        put("function", JSONObject().apply {
+                                            put("name", toolCallFunctionName)
+                                            put("arguments", toolCallArgsBuilder.toString())
+                                        })
+                                    })
+                                })
+                            }
+                        )
+                        messagesArray.put(
+                            JSONObject().apply {
+                                put("role", "tool")
+                                put("tool_call_id", toolCallId)
+                                put("content", searchResults)
+                            }
+                        )
+                        put("messages", messagesArray)
+                    }
+
+                    val secondRequest = Request.Builder()
+                        .url(apiUrl)
+                        .addHeader("Authorization", "Bearer $apiKey")
+                        .addHeader("Content-Type", "application/json")
+                        .post(secondBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                        .build()
+
+                    val secondCall = client.newCall(secondRequest)
+                    currentCall = secondCall
+                    val secondResponse = secondCall.execute()
+                    currentCall = null
+
+                    if (secondResponse.isSuccessful) {
+                        fullContent = ""
+                        val secondReader = secondResponse.body?.charStream()?.buffered()
+                        if (secondReader != null) {
+                            var sLine: String?
+                            while (secondReader.readLine().also { sLine = it } != null) {
+                                val sCurrent = sLine ?: continue
+                                if (sCurrent.startsWith("data: ")) {
+                                    val sData = sCurrent.removePrefix("data: ").trim()
+                                    if (sData == "[DONE]") break
+                                    try {
+                                        val sJson = JSONObject(sData)
+                                        val sChoices = sJson.optJSONArray("choices")
+                                        if (sChoices != null && sChoices.length() > 0) {
+                                            val sDelta = sChoices.getJSONObject(0).optJSONObject("delta")
+                                            if (sDelta != null && sDelta.has("content") && !sDelta.isNull("content")) {
+                                                fullContent += sDelta.getString("content")
+                                                withContext(Dispatchers.Main) {
+                                                    streamingContent = fullContent
+                                                    chatLogs[aiEntryIndex] = LogEntry("AI", fullContent, fullReasoning)
+                                                }
+                                            }
+                                            if (sDelta != null && sDelta.has("reasoning_content") && !sDelta.isNull("reasoning_content")) {
+                                                fullReasoning += sDelta.getString("reasoning_content")
+                                                withContext(Dispatchers.Main) {
+                                                    streamingReasoning = fullReasoning
+                                                    chatLogs[aiEntryIndex] = LogEntry("AI", fullContent, fullReasoning)
+                                                }
+                                            }
+                                        }
+                                    } catch (_: Exception) { }
+                                }
+                            }
+                            secondReader.close()
+                        }
+                    }
+
+                    chatLogs[aiEntryIndex] = LogEntry("AI", fullContent.ifEmpty { "Search completed but no response generated." }, fullReasoning)
+                    saveCurrentSession()
+                    return@launch
+                }
+
                 if (!isStreaming && fullContent.isBlank()) {
                     fullContent = parseNonStreaming(fullContent)
                 }
 
-                chatLogs[aiEntryIndex] = LogEntry("AI", fullContent)
+                chatLogs[aiEntryIndex] = LogEntry("AI", fullContent, fullReasoning)
                 saveCurrentSession()
             } catch (e: CancellationException) {
-                chatLogs[aiEntryIndex] = LogEntry("AI", fullContent.takeIf { it.isNotEmpty() } ?: "Cancelled")
+                chatLogs[aiEntryIndex] = LogEntry("AI", fullContent.takeIf { it.isNotEmpty() } ?: "Cancelled", fullReasoning)
                 if (fullContent.isNotEmpty()) saveCurrentSession()
             } catch (e: Exception) {
                 chatLogs[aiEntryIndex] = LogEntry("AI", "Error [${e::class.simpleName}]: ${e.message ?: e.localizedMessage ?: "No message"}")
             } finally {
                 isLoading = false
                 streamingContent = ""
+                streamingReasoning = ""
                 currentCall = null
             }
+        }
+    }
+
+    private fun exaSearch(query: String): String {
+        return try {
+            val jsonBody = JSONObject().apply {
+                put("query", query)
+                put("type", "auto")
+                put("numResults", 5)
+                put("contents", JSONObject().apply {
+                    put("highlights", true)
+                })
+            }
+            val request = Request.Builder()
+                .url("https://api.exa.ai/search")
+                .addHeader("x-api-key", exaApiKey)
+                .addHeader("Content-Type", "application/json")
+                .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return "No results"
+            val root = JSONObject(body)
+            val results = root.optJSONArray("results")
+            if (results == null || results.length() == 0) return "No results"
+            val sb = StringBuilder()
+            for (i in 0 until results.length()) {
+                val r = results.getJSONObject(i)
+                sb.appendLine("Title: ${r.optString("title")}")
+                sb.appendLine("URL: ${r.optString("url")}")
+                val highlights = r.optJSONArray("highlights")
+                if (highlights != null) {
+                    for (j in 0 until highlights.length()) {
+                        sb.appendLine(highlights.getString(j))
+                    }
+                }
+                sb.appendLine()
+            }
+            sb.toString()
+        } catch (e: Exception) {
+            "Search error: ${e.message}"
         }
     }
 
@@ -412,30 +641,113 @@ fun MiauChatMainScreen(viewModel: MiauChatViewModel) {
 
 @Composable
 fun ChatLine(log: LogEntry) {
-    val prefix = when (log.sender) {
-        "USER" -> "> "
-        "SYSTEM" -> "# "
-        else -> ""
-    }
+    val isUser = log.sender == "USER"
+    val isSystem = log.sender == "SYSTEM"
 
-    val textColor = when (log.sender) {
-        "USER" -> ColorTextPrimary
-        "SYSTEM" -> ColorTextMuted
-        else -> ColorTextPrimary
-    }
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = when {
+            isSystem -> Alignment.Center
+            isUser -> Alignment.CenterEnd
+            else -> Alignment.CenterStart
+        }
+    ) {
+        if (isSystem) {
+            Text(
+                text = log.content,
+                color = ColorTextMuted,
+                fontFamily = FontFamily.Monospace,
+                fontSize = 12.sp
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .widthIn(max = 340.dp)
+                    .background(
+                        color = if (isUser) ColorSurfaceDark else ColorBackground,
+                        shape = RoundedCornerShape(0.dp)
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (isUser) ColorAccentBlue else ColorBorderDim,
+                        shape = RoundedCornerShape(0.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Column {
+                    if (log.reasoning.isNotEmpty()) {
+                        val stillThinking = log.content.isEmpty()
+                        var expanded by remember { mutableStateOf(stillThinking) }
 
-    Text(
-        text = prefix + log.content,
-        color = textColor,
-        fontFamily = FontFamily.Monospace,
-        fontSize = 14.sp,
-        lineHeight = 20.sp
-    )
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { expanded = !expanded }
+                                .padding(bottom = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                                contentDescription = if (expanded) "Collapse" else "Show",
+                                tint = ColorTextMuted,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = if (stillThinking) "thinking..." else "reasoning",
+                                color = ColorTextMuted,
+                                fontFamily = FontFamily.Monospace,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        AnimatedVisibility(visible = expanded) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(ColorSurfaceDark)
+                                    .border(1.dp, ColorBorderDim)
+                                    .padding(8.dp)
+                            ) {
+                                Text(
+                                    text = log.reasoning,
+                                    color = ColorTextMuted,
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 12.sp,
+                                    lineHeight = 18.sp
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                    }
+                    Text(
+                        text = log.content,
+                        color = ColorTextPrimary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
 fun InputCard(viewModel: MiauChatViewModel) {
     val keyboardController = LocalSoftwareKeyboardController.current
+    val context = LocalContext.current
+
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            val fileName = getFileName(context, uri) ?: "file"
+            viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+        }
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -494,6 +806,26 @@ fun InputCard(viewModel: MiauChatViewModel) {
                     color = if (viewModel.isConnected) ColorTextPrimary else ColorTextMuted,
                     fontFamily = FontFamily.Monospace,
                     fontSize = 11.sp
+                )
+            }
+        }
+
+        IconButton(onClick = { filePickerLauncher.launch("*/*") }) {
+            Icon(
+                imageVector = Icons.Default.AttachFile,
+                contentDescription = "Attach",
+                tint = ColorTextMuted,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        if (viewModel.exaApiKey.isNotEmpty()) {
+            IconButton(onClick = { viewModel.toggleExaSearch() }) {
+                Icon(
+                    imageVector = if (viewModel.exaSearchEnabled) Icons.Default.Search else Icons.Default.Language,
+                    contentDescription = "Web search",
+                    tint = if (viewModel.exaSearchEnabled) ColorAccentBlue else ColorTextMuted,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -611,11 +943,20 @@ fun HistoryDialog(viewModel: MiauChatViewModel) {
     }
 }
 
+private fun getFileName(context: Context, uri: Uri): String? {
+    val cursor = context.contentResolver.query(uri, null, null, null, null)
+    return cursor?.use { c ->
+        val idx = c.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (idx >= 0 && c.moveToFirst()) c.getString(idx) else uri.lastPathSegment
+    } ?: uri.lastPathSegment
+}
+
 @Composable
 fun ConfigDialog(viewModel: MiauChatViewModel) {
     var urlInput by remember { mutableStateOf(viewModel.apiUrl) }
     var keyInput by remember { mutableStateOf(viewModel.apiKey) }
     var modelInput by remember { mutableStateOf(viewModel.apiModel) }
+    var exaKeyInput by remember { mutableStateOf(viewModel.exaApiKey) }
 
     Dialog(onDismissRequest = { viewModel.showConfigDialog = false }) {
         Card(
@@ -686,6 +1027,26 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = ColorAccentBlue, unfocusedBorderColor = ColorTextMuted
                     ),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                )
+
+                Text(
+                    text = "Exa API Key (web search)",
+                    color = ColorTextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                OutlinedTextField(
+                    value = exaKeyInput,
+                    onValueChange = { exaKeyInput = it },
+                    placeholder = { Text("exa-...", color = ColorTextMuted, fontSize = 12.sp) },
+                    textStyle = TextStyle(color = ColorTextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = ColorAccentBlue, unfocusedBorderColor = ColorTextMuted
+                    ),
                     modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
                 )
 
@@ -704,6 +1065,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                             viewModel.saveConfiguration(
                                 url = urlInput.trim(), key = keyInput.trim(), model = modelInput.trim()
                             )
+                            viewModel.saveExaConfiguration(key = exaKeyInput.trim())
                         }
                     ) {
                         Text(

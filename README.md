@@ -35,9 +35,9 @@ Dark theme, monospace UI, streaming responses, and session history — all in a 
 
 ### Download
 
-[Download latest APK (v1.0.0)](https://github.com/CocoKitten2026/MiauChat/releases/tag/v1.0.0) — debug build, ready to sideload.
+[Download MiauChat.apk (v1.1.0)](https://github.com/CocoKitten2026/MiauChat/releases/download/v1.1.0/MiauChat.apk) — debug build, ready to sideload.
 
-SHA256: `b45623b977ce984ab6b309562c756714b47e1e90402f48342e5b38424ac600d5`
+SHA256: `f50819d3401c2a3ce638e0cbdfab51710e49b82f542bed120ab2ae3025097756`
 
 ### Build & Run
 

@@ -15,11 +15,13 @@ No formatter or typecheck tooling is configured. Kotlin code style is `official`
 
 ## Architecture (single module `:app`)
 
-- **Entrypoint**: `app/src/main/java/com/example/miauchat/MainActivity.kt` — contains ViewModel + all composables in one file.
+- **Entrypoint**: `app/src/main/java/com/example/miauchat/MainActivity.kt` — contains ViewModel + all composables in one file (~1000+ lines).
 - **ViewModel is manual** (no DI framework like Hilt/Koin). `MiauChatViewModel` takes a `Context` via a custom `ViewModelProvider.Factory` in `onCreate()`. Preserve the factory pattern if refactoring.
-- **No XML layouts** for the UI — pure Jetpack Compose (Material 3) with a dark-terminal theme (`FontFamily.Monospace`, black background, blue accent).
-- **Networking**: OkHttp direct calls (no Retrofit). Requests use `"stream": true` with SSE parsing (`data:` lines); non-streaming fallback via `parseNonStreaming()`.
-- **Persistence**: Chat sessions serialized to JSON in `SharedPreferences` under key `"sessions"`. API URL/key/model also stored in prefs.
+- **No XML layouts** for the UI — pure Jetpack Compose (Material 3) with a dark-terminal theme (`FontFamily.Monospace`, black background, blue accent). Uses `material-icons-extended` for `AttachFile`, `Language`, `Search` icons.
+- **Networking**: OkHttp direct calls (no Retrofit). Requests use `"stream": true` with SSE parsing (`data:` lines); non-streaming fallback via `parseNonStreaming()`. Also supports OpenAI-compatible **tool/function calling** — includes a `web_search` tool definition for Exa when `exaSearchEnabled` is on.
+- **Exa web search**: Configurable API key. When enabled, adds a toggle button (globe/search icon) next to the attach button. The model decides when to call `web_search` via tool calling; results are fetched from `POST https://api.exa.ai/search` and fed back in a second streaming request.
+- **Model thinking**: SSE `reasoning_content` field is captured in `LogEntry.reasoning` and displayed in a muted collapsible block within AI message containers.
+- **Persistence**: Chat sessions serialized to JSON in `SharedPreferences` under key `"sessions"`. API URL/key/model, Exa key also stored in prefs.
 
 ## Sensitive data
 

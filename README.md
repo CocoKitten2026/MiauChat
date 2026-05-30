@@ -71,4 +71,4 @@ All UI lives in a single file — no XML layouts, no Fragments, no DI framework.
 
 ## License
 
-Private project.
+GNU General Public License v3.0

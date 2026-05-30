@@ -33,6 +33,12 @@ Dark theme, monospace UI, streaming responses, and session history — all in a 
 - JDK 11
 - An OpenAI-compatible API endpoint and key
 
+### Download
+
+[Download latest APK (v1.0.0)](https://github.com/CocoKitten2026/MiauChat/releases/tag/v1.0.0) — debug build, ready to sideload.
+
+SHA256: `b45623b977ce984ab6b309562c756714b47e1e90402f48342e5b38424ac600d5`
+
 ### Build & Run
 
 ```bash

@@ -15,7 +15,7 @@ No formatter or typecheck tooling is configured. Kotlin code style is `official`
 
 ## Architecture (single module `:app`)
 
-- **Entrypoint**: `app/src/main/java/com/example/miauchat/MainActivity.kt` — contains ViewModel + all composables in one file (~1000+ lines).
+- **Entrypoint**: `app/src/main/java/com/example/miauchat/MainActivity.kt` — contains ViewModel + all composables in one file (~1176 lines).
 - **ViewModel is manual** (no DI framework like Hilt/Koin). `MiauChatViewModel` takes a `Context` via a custom `ViewModelProvider.Factory` in `onCreate()`. Preserve the factory pattern if refactoring.
 - **No XML layouts** for the UI — pure Jetpack Compose (Material 3) with a dark-terminal theme (`FontFamily.Monospace`, black background, blue accent). Uses `material-icons-extended` for `AttachFile`, `Language`, `Search` icons.
 - **Networking**: OkHttp direct calls (no Retrofit). Requests use `"stream": true` with SSE parsing (`data:` lines); non-streaming fallback via `parseNonStreaming()`. Also supports OpenAI-compatible **tool/function calling** — includes a `web_search` tool definition for Exa when `exaSearchEnabled` is on.
@@ -25,7 +25,11 @@ No formatter or typecheck tooling is configured. Kotlin code style is `official`
 
 ## Sensitive data
 
-`app/src/androidTest/java/com/example/miauchat/MiauChatTest.kt` contains a **live API key** committed to the repo. Do not duplicate or expose it further.
+`app/src/androidTest/java/com/example/miauchat/MiauChatTest.kt` contains a **live API key** committed to the repo. Do not duplicate or expose it further. These tests require network access to a real API and have a 60 s timeout — they are not hermetic.
+
+## App identity quirk
+
+`namespace = "com.example.miauchat"` but `applicationId = "com.opencode.client"` in `app/build.gradle.kts`. The APK is published as `com.opencode.client`.
 
 ## Toolchain
 

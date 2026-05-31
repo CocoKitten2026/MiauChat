@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.util.Base64
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -71,6 +72,11 @@ data class LogEntry(
     val reasoning: String = ""
 )
 
+data class PendingFile(
+    val fileName: String,
+    val content: String
+)
+
 data class ChatSession(
     val label: String,
     val logs: List<LogEntry>
@@ -90,6 +96,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     val chatLogs = mutableStateListOf<LogEntry>()
     var currentInput by mutableStateOf("")
     var isLoading by mutableStateOf(false)
+    var pendingFile by mutableStateOf<PendingFile?>(null)
     var showConfigDialog by mutableStateOf(false)
     var showHistoryDialog by mutableStateOf(false)
     var streamingContent by mutableStateOf("")
@@ -208,9 +215,18 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     fun sendMessage() {
         val messageToSend = currentInput.trim()
-        if (messageToSend.isEmpty() || isLoading) return
+        val file = pendingFile
+        if (messageToSend.isEmpty() && file == null) return
+        if (messageToSend.isEmpty() && file != null && isLoading) return
 
-        chatLogs.add(LogEntry("USER", messageToSend))
+        val displayMessage = if (file != null) {
+            if (messageToSend.isNotEmpty()) "[📎 ${file.fileName}]\n$messageToSend" else "[📎 ${file.fileName}]"
+        } else {
+            messageToSend
+        }
+        pendingFile = null
+
+        chatLogs.add(LogEntry("USER", displayMessage))
         currentInput = ""
 
         if (!isConnected) {
@@ -232,15 +248,27 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     put("model", apiModel)
                     put("stream", true)
                     val messagesArray = JSONArray()
+                    messagesArray.put(JSONObject().apply {
+                        put("role", "system")
+                        put("content", "You are a helpful assistant. Keep responses appropriate and help the user as much as possible.")
+                    })
                     for (i in 0 until aiEntryIndex) {
                         val log = chatLogs[i]
                         when (log.sender) {
-                            "USER" -> messagesArray.put(
-                                JSONObject().apply {
-                                    put("role", "user")
-                                    put("content", log.content)
+                            "USER" -> {
+                                val content = if (i == aiEntryIndex - 1 && file != null) {
+                                    val fileBlock = "<uploaded_file name=\"${file.fileName}\">\n${file.content}\n</uploaded_file>"
+                                    if (messageToSend.isNotEmpty()) "$fileBlock\n\n$messageToSend" else fileBlock
+                                } else {
+                                    log.content
                                 }
-                            )
+                                messagesArray.put(
+                                    JSONObject().apply {
+                                        put("role", "user")
+                                        put("content", content)
+                                    }
+                                )
+                            }
                             "AI" -> messagesArray.put(
                                 JSONObject().apply {
                                     put("role", "assistant")
@@ -249,12 +277,6 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                             )
                         }
                     }
-                    messagesArray.put(
-                        JSONObject().apply {
-                            put("role", "user")
-                            put("content", messageToSend)
-                        }
-                    )
                     put("messages", messagesArray)
                     if (exaSearchEnabled) {
                         put("tools", JSONArray().apply {
@@ -744,7 +766,38 @@ fun InputCard(viewModel: MiauChatViewModel) {
     ) { uri: Uri? ->
         if (uri != null) {
             val fileName = getFileName(context, uri) ?: "file"
-            viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+            val ext = getFileExtension(fileName)
+            when {
+                ext != null && ext in TEXT_FILE_EXTENSIONS -> {
+                    val textContent = readTextContent(context, uri)
+                    if (textContent != null) {
+                        viewModel.pendingFile = PendingFile(fileName = fileName, content = textContent)
+                    } else {
+                        viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+                    }
+                }
+                ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "webp" || ext == "gif" || ext == "bmp" -> {
+                    val mimeType = when (ext) {
+                        "png" -> "image/png"; "jpg", "jpeg" -> "image/jpeg"
+                        "webp" -> "image/webp"; "gif" -> "image/gif"
+                        "bmp" -> "image/bmp"; else -> "image/png"
+                    }
+                    try {
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                        if (bytes != null) {
+                            val b64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                            viewModel.pendingFile = PendingFile(fileName = fileName, content = "data:$mimeType;base64,$b64")
+                        } else {
+                            viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+                        }
+                    } catch (_: Exception) {
+                        viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+                    }
+                }
+                else -> {
+                    viewModel.chatLogs.add(LogEntry("USER", "[📎 $fileName]"))
+                }
+            }
         }
     }
 
@@ -768,45 +821,74 @@ fun InputCard(viewModel: MiauChatViewModel) {
                 .weight(1f)
                 .padding(start = 14.dp, top = 12.dp, end = 4.dp, bottom = 12.dp)
         ) {
-            Box(modifier = Modifier.fillMaxWidth()) {
-                if (viewModel.currentInput.isEmpty() && !viewModel.isLoading) {
-                    Text(
-                        text = "Ask anything...",
-                        color = ColorTextMuted,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp
+            Column(modifier = Modifier.fillMaxWidth()) {
+                if (viewModel.pendingFile != null) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "📎 ${viewModel.pendingFile!!.fileName}",
+                            color = ColorAccentBlue,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = { viewModel.pendingFile = null },
+                            modifier = Modifier.size(18.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "Remove file",
+                                tint = ColorTextMuted,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (viewModel.currentInput.isEmpty() && !viewModel.isLoading) {
+                        Text(
+                            text = "Ask anything...",
+                            color = ColorTextMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp
+                        )
+                    }
+
+                    BasicTextField(
+                        value = viewModel.currentInput,
+                        onValueChange = { viewModel.currentInput = it },
+                        textStyle = TextStyle(
+                            color = ColorTextPrimary,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 13.sp
+                        ),
+                        cursorBrush = SolidColor(ColorTextPrimary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = {
+                            keyboardController?.hide()
+                            if (!viewModel.isLoading) viewModel.sendMessage()
+                        }),
+                        modifier = Modifier.fillMaxWidth(),
+                        readOnly = viewModel.isLoading
                     )
                 }
 
-                BasicTextField(
-                    value = viewModel.currentInput,
-                    onValueChange = { viewModel.currentInput = it },
-                    textStyle = TextStyle(
-                        color = ColorTextPrimary,
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    val label = if (viewModel.isConnected) viewModel.apiModel else "Offline"
+                    Text(
+                        text = label,
+                        color = if (viewModel.isConnected) ColorTextPrimary else ColorTextMuted,
                         fontFamily = FontFamily.Monospace,
-                        fontSize = 13.sp
-                    ),
-                    cursorBrush = SolidColor(ColorTextPrimary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = {
-                        keyboardController?.hide()
-                        if (!viewModel.isLoading) viewModel.sendMessage()
-                    }),
-                    modifier = Modifier.fillMaxWidth(),
-                    readOnly = viewModel.isLoading
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                val label = if (viewModel.isConnected) viewModel.apiModel else "Offline"
-                Text(
-                    text = label,
-                    color = if (viewModel.isConnected) ColorTextPrimary else ColorTextMuted,
-                    fontFamily = FontFamily.Monospace,
-                    fontSize = 11.sp
-                )
+                        fontSize = 11.sp
+                    )
+                }
             }
         }
 
@@ -941,6 +1023,24 @@ fun HistoryDialog(viewModel: MiauChatViewModel) {
             }
         }
     }
+}
+
+private val TEXT_FILE_EXTENSIONS = setOf(
+    "txt", "svg", "html", "htm", "js", "ts", "jsx", "tsx",
+    "css", "scss", "json", "xml", "md", "csv", "py", "rb",
+    "sh", "yaml", "yml", "log", "env", "sql", "java", "c",
+    "cpp", "h", "rs", "go", "php", "swift", "kt"
+)
+
+private fun getFileExtension(name: String): String? {
+    val dot = name.lastIndexOf('.')
+    return if (dot >= 0) name.substring(dot + 1).lowercase() else null
+}
+
+private fun readTextContent(context: Context, uri: Uri): String? {
+    return try {
+        context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+    } catch (_: Exception) { null }
 }
 
 private fun getFileName(context: Context, uri: Uri): String? {

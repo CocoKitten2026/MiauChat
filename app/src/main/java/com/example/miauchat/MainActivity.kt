@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
@@ -90,7 +92,8 @@ data class ApiPreset(
     val url: String = "",
     val key: String = "",
     val model: String = "",
-    val exaKey: String = ""
+    val exaKey: String = "",
+    val firecrawlKey: String = ""
 )
 
 class MiauChatViewModel(context: Context) : ViewModel() {
@@ -101,6 +104,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     var apiModel by mutableStateOf(prefs.getString("api_model", "") ?: "")
 
     var exaApiKey by mutableStateOf(prefs.getString("exa_api_key", "") ?: "")
+    var firecrawlApiKey by mutableStateOf(prefs.getString("firecrawl_api_key", "") ?: "")
     var exaSearchEnabled by mutableStateOf(false)
     var activePresetIndex by mutableStateOf(0)
     val apiPresets = mutableStateListOf(*Array(5) { ApiPreset() })
@@ -139,7 +143,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             putString("api_model", model)
             apply()
         }
-        apiPresets[activePresetIndex] = ApiPreset(url, key, model, exaApiKey)
+        apiPresets[activePresetIndex] = ApiPreset(url, key, model, exaApiKey, firecrawlApiKey)
         persistPresets()
         showConfigDialog = false
     }
@@ -148,7 +152,14 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         exaApiKey = key
         prefs.edit().putString("exa_api_key", key).apply()
         if (key.isNotEmpty()) exaSearchEnabled = true
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, key)
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, key, firecrawlApiKey)
+        persistPresets()
+    }
+
+    fun saveFirecrawlConfiguration(key: String) {
+        firecrawlApiKey = key
+        prefs.edit().putString("firecrawl_api_key", key).apply()
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, key)
         persistPresets()
     }
 
@@ -213,12 +224,12 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 apiPresets.clear()
                 for (i in 0 until arr.length()) {
                     val obj = arr.getJSONObject(i)
-                    apiPresets.add(ApiPreset(obj.optString("url", ""), obj.optString("key", ""), obj.optString("model", ""), obj.optString("exaKey", "")))
+                    apiPresets.add(ApiPreset(obj.optString("url", ""), obj.optString("key", ""), obj.optString("model", ""), obj.optString("exaKey", ""), obj.optString("firecrawlKey", "")))
                 }
                 if (apiPresets.isNotEmpty() && apiPresets[0].url.isNotEmpty()) {
                     val p = apiPresets[0]
                     apiUrl = p.url; apiKey = p.key; apiModel = p.model
-                    exaApiKey = p.exaKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+                    exaApiKey = p.exaKey; firecrawlApiKey = p.firecrawlKey; exaSearchEnabled = p.exaKey.isNotEmpty()
                     isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
                 }
                 return
@@ -232,9 +243,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     private fun persistPresets() {
         val arr = JSONArray().apply {
-            for (p in apiPresets) put(JSONObject().apply {
-                put("url", p.url); put("key", p.key); put("model", p.model); put("exaKey", p.exaKey)
-            })
+                for (p in apiPresets) put(JSONObject().apply {
+                    put("url", p.url); put("key", p.key); put("model", p.model); put("exaKey", p.exaKey); put("firecrawlKey", p.firecrawlKey)
+                })
         }
         prefs.edit().putString("api_presets", arr.toString()).apply()
     }
@@ -260,10 +271,10 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     fun switchPreset(index: Int) {
         if (index < 0 || index >= apiPresets.size) return
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey)
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, firecrawlApiKey)
         val p = apiPresets[index]
         apiUrl = p.url; apiKey = p.key; apiModel = p.model
-        exaApiKey = p.exaKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+        exaApiKey = p.exaKey; firecrawlApiKey = p.firecrawlKey; exaSearchEnabled = p.exaKey.isNotEmpty()
         isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
         activePresetIndex = index
         persistPresets()
@@ -311,9 +322,15 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     put("model", apiModel)
                     put("stream", true)
                     val messagesArray = JSONArray()
+                    val systemPrompt = buildString {
+                        append("You are a helpful assistant. Keep responses appropriate and help the user as much as possible.")
+                        if (exaSearchEnabled) {
+                            append(" You have access to two search tools: Firecrawl and Exa. Use Firecrawl when the user gives a specific URL or asks to look up a link, open, or visit a page. Use Exa when the user asks about random, general, or semantic topics. If unsure, default to Firecrawl for direct links and Exa for general questions.")
+                        }
+                    }
                     messagesArray.put(JSONObject().apply {
                         put("role", "system")
-                        put("content", "You are a helpful assistant. Keep responses appropriate and help the user as much as possible. You have a web_search tool available — use it when the user asks for current information, facts, news, or anything beyond your knowledge cutoff. For questions about production numbers, specifications, or recent events, always search first before answering.")
+                        put("content", systemPrompt)
                     })
                     for (i in 0 until aiEntryIndex) {
                         val log = chatLogs[i]
@@ -347,7 +364,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                 put("type", "function")
                                 put("function", JSONObject().apply {
                                     put("name", "web_search")
-                                    put("description", "Search the web for current information. Use this when you need up-to-date facts, news, or information beyond your training data.")
+                                    put("description", "Search the web using Exa. Use this for general, semantic, or news queries — not for specific URLs.")
                                     put("parameters", JSONObject().apply {
                                         put("type", "object")
                                         put("properties", JSONObject().apply {
@@ -362,6 +379,27 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                     })
                                 })
                             })
+                            if (firecrawlApiKey.isNotEmpty()) {
+                                put(JSONObject().apply {
+                                    put("type", "function")
+                                    put("function", JSONObject().apply {
+                                        put("name", "firecrawl")
+                                        put("description", "Fetch the content of a specific URL. Use this when the user shares a link, asks to open or look up a specific web page.")
+                                        put("parameters", JSONObject().apply {
+                                            put("type", "object")
+                                            put("properties", JSONObject().apply {
+                                                put("url", JSONObject().apply {
+                                                    put("type", "string")
+                                                    put("description", "The URL to fetch")
+                                                })
+                                            })
+                                            put("required", JSONArray().apply {
+                                                put("url")
+                                            })
+                                        })
+                                    })
+                                })
+                            }
                         })
                     }
                 }
@@ -446,10 +484,15 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 }
                 reader.close()
 
-                if (toolCallId != null && toolCallFunctionName == "web_search") {
+                if (toolCallId != null && (toolCallFunctionName == "web_search" || toolCallFunctionName == "firecrawl")) {
                     val argsJson = JSONObject(toolCallArgsBuilder.toString())
-                    val searchQuery = argsJson.optString("query", messageToSend)
-                    val searchResults = exaSearch(searchQuery)
+                    val toolResult = if (toolCallFunctionName == "web_search") {
+                        val searchQuery = argsJson.optString("query", messageToSend)
+                        exaSearch(searchQuery)
+                    } else {
+                        val url = argsJson.optString("url", "")
+                        if (url.isNotEmpty()) firecrawlFetch(url) else "No URL provided"
+                    }
 
                     val secondBody = JSONObject().apply {
                         put("model", apiModel)
@@ -488,7 +531,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                             JSONObject().apply {
                                 put("role", "tool")
                                 put("tool_call_id", toolCallId)
-                                put("content", searchResults)
+                                put("content", toolResult)
                             }
                         )
                         put("messages", messagesArray)
@@ -605,6 +648,29 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             sb.toString()
         } catch (e: Exception) {
             "Search error: ${e.message}"
+        }
+    }
+
+    private fun firecrawlFetch(url: String): String {
+        return try {
+            val jsonBody = JSONObject().apply {
+                put("url", url)
+                put("formats", JSONArray().apply { put("markdown") })
+            }
+            val request = Request.Builder()
+                .url("https://api.firecrawl.dev/v1/scrape")
+                .addHeader("Authorization", "Bearer $firecrawlApiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            val response = client.newCall(request).execute()
+            val body = response.body?.string() ?: return "No content"
+            val root = JSONObject(body)
+            if (!root.optBoolean("success", false)) return "Error: ${root.optString("error", "unknown")}"
+            val data = root.optJSONObject("data")
+            data?.optString("markdown", "")?.takeIf { it.isNotBlank() } ?: data?.optString("content", "") ?: "No content found at URL"
+        } catch (e: Exception) {
+            "Firecrawl error: ${e.message}"
         }
     }
 
@@ -813,8 +879,27 @@ fun ChatLine(log: LogEntry) {
                         fontFamily = FontFamily.Monospace,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
-                        modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(log.content)) }
                     )
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+                        horizontalArrangement = Arrangement.End
+                    ) {
+                        OutlinedButton(
+                            onClick = { clipboardManager.setText(AnnotatedString(log.content)) },
+                            border = BorderStroke(1.dp, ColorBorderDim),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp),
+                            shape = RoundedCornerShape(4.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = ColorTextMuted)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.ContentCopy,
+                                contentDescription = "Copy",
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("Copy", fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                        }
+                    }
                 }
             }
         }
@@ -1133,6 +1218,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
     var keyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiKey) }
     var modelInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiModel) }
     var exaKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.exaApiKey) }
+    var firecrawlKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.firecrawlApiKey) }
 
     Dialog(onDismissRequest = { viewModel.showConfigDialog = false }) {
         Card(
@@ -1161,6 +1247,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                                 viewModel.apiKey = keyInput.trim()
                                 viewModel.apiModel = modelInput.trim()
                                 viewModel.exaApiKey = exaKeyInput.trim()
+                                viewModel.firecrawlApiKey = firecrawlKeyInput.trim()
                                 viewModel.switchPreset(idx)
                             }
                         },
@@ -1184,6 +1271,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                                 viewModel.apiKey = keyInput.trim()
                                 viewModel.apiModel = modelInput.trim()
                                 viewModel.exaApiKey = exaKeyInput.trim()
+                                viewModel.firecrawlApiKey = firecrawlKeyInput.trim()
                                 viewModel.switchPreset(idx)
                             }
                         },
@@ -1268,6 +1356,26 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = ColorAccentBlue, unfocusedBorderColor = ColorTextMuted
                     ),
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
+                )
+
+                Text(
+                    text = "Firecrawl API Key (URL scraping)",
+                    color = ColorTextPrimary,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    modifier = Modifier.padding(bottom = 4.dp)
+                )
+                OutlinedTextField(
+                    value = firecrawlKeyInput,
+                    onValueChange = { firecrawlKeyInput = it },
+                    placeholder = { Text("fc-...", color = ColorTextMuted, fontSize = 12.sp) },
+                    textStyle = TextStyle(color = ColorTextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = ColorAccentBlue, unfocusedBorderColor = ColorTextMuted
+                    ),
                     modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp)
                 )
 
@@ -1287,6 +1395,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                                 url = urlInput.trim(), key = keyInput.trim(), model = modelInput.trim()
                             )
                             viewModel.saveExaConfiguration(key = exaKeyInput.trim())
+                            viewModel.saveFirecrawlConfiguration(key = firecrawlKeyInput.trim())
                         }
                     ) {
                         Text(

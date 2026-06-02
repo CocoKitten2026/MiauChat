@@ -30,6 +30,8 @@ import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
@@ -44,7 +46,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -82,6 +86,13 @@ data class ChatSession(
     val logs: List<LogEntry>
 )
 
+data class ApiPreset(
+    val url: String = "",
+    val key: String = "",
+    val model: String = "",
+    val exaKey: String = ""
+)
+
 class MiauChatViewModel(context: Context) : ViewModel() {
     private val prefs: SharedPreferences = context.getSharedPreferences("miauchat_prefs", Context.MODE_PRIVATE)
 
@@ -91,6 +102,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     var exaApiKey by mutableStateOf(prefs.getString("exa_api_key", "") ?: "")
     var exaSearchEnabled by mutableStateOf(false)
+    var activePresetIndex by mutableStateOf(0)
+    val apiPresets = mutableStateListOf(*Array(5) { ApiPreset() })
 
     var isConnected by mutableStateOf(apiUrl.isNotEmpty() && apiKey.isNotEmpty() && apiModel.isNotEmpty())
     val chatLogs = mutableStateListOf<LogEntry>()
@@ -112,6 +125,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     init {
         loadSessions()
+        loadPresets()
     }
 
     fun saveConfiguration(url: String, key: String, model: String) {
@@ -125,6 +139,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             putString("api_model", model)
             apply()
         }
+        apiPresets[activePresetIndex] = ApiPreset(url, key, model, exaApiKey)
+        persistPresets()
         showConfigDialog = false
     }
 
@@ -132,6 +148,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         exaApiKey = key
         prefs.edit().putString("exa_api_key", key).apply()
         if (key.isNotEmpty()) exaSearchEnabled = true
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, key)
+        persistPresets()
     }
 
     fun toggleExaSearch() {
@@ -187,6 +205,40 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         } catch (_: Exception) { }
     }
 
+    private fun loadPresets() {
+        val json = prefs.getString("api_presets", null)
+        if (json != null) {
+            try {
+                val arr = JSONArray(json)
+                apiPresets.clear()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.getJSONObject(i)
+                    apiPresets.add(ApiPreset(obj.optString("url", ""), obj.optString("key", ""), obj.optString("model", ""), obj.optString("exaKey", "")))
+                }
+                if (apiPresets.isNotEmpty() && apiPresets[0].url.isNotEmpty()) {
+                    val p = apiPresets[0]
+                    apiUrl = p.url; apiKey = p.key; apiModel = p.model
+                    exaApiKey = p.exaKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+                    isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
+                }
+                return
+            } catch (_: Exception) { }
+        }
+        apiPresets.clear()
+        apiPresets.add(ApiPreset(apiUrl, apiKey, apiModel, exaApiKey))
+        for (i in 1 until 5) apiPresets.add(ApiPreset())
+        persistPresets()
+    }
+
+    private fun persistPresets() {
+        val arr = JSONArray().apply {
+            for (p in apiPresets) put(JSONObject().apply {
+                put("url", p.url); put("key", p.key); put("model", p.model); put("exaKey", p.exaKey)
+            })
+        }
+        prefs.edit().putString("api_presets", arr.toString()).apply()
+    }
+
     private fun persistSessions() {
         val arr = JSONArray()
         for (s in sessions) {
@@ -204,6 +256,17 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             })
         }
         prefs.edit().putString("sessions", arr.toString()).apply()
+    }
+
+    fun switchPreset(index: Int) {
+        if (index < 0 || index >= apiPresets.size) return
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey)
+        val p = apiPresets[index]
+        apiUrl = p.url; apiKey = p.key; apiModel = p.model
+        exaApiKey = p.exaKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+        isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
+        activePresetIndex = index
+        persistPresets()
     }
 
     fun stopGeneration() {
@@ -665,6 +728,7 @@ fun MiauChatMainScreen(viewModel: MiauChatViewModel) {
 fun ChatLine(log: LogEntry) {
     val isUser = log.sender == "USER"
     val isSystem = log.sender == "SYSTEM"
+    val clipboardManager = LocalClipboardManager.current
 
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -699,7 +763,7 @@ fun ChatLine(log: LogEntry) {
                 Column {
                     if (log.reasoning.isNotEmpty()) {
                         val stillThinking = log.content.isEmpty()
-                        var expanded by remember { mutableStateOf(stillThinking) }
+                        var expanded by remember(stillThinking) { mutableStateOf(stillThinking) }
 
                         Row(
                             modifier = Modifier
@@ -748,7 +812,8 @@ fun ChatLine(log: LogEntry) {
                         color = ColorTextPrimary,
                         fontFamily = FontFamily.Monospace,
                         fontSize = 14.sp,
-                        lineHeight = 20.sp
+                        lineHeight = 20.sp,
+                        modifier = Modifier.clickable { clipboardManager.setText(AnnotatedString(log.content)) }
                     )
                 }
             }
@@ -888,6 +953,17 @@ fun InputCard(viewModel: MiauChatViewModel) {
                         fontFamily = FontFamily.Monospace,
                         fontSize = 11.sp
                     )
+                    if (viewModel.chatLogs.isNotEmpty()) {
+                        val totalChars = viewModel.chatLogs.sumOf { it.content.length }
+                        val estTokens = totalChars / 4
+                        val tokenText = if (estTokens >= 1000) "${estTokens / 1000}.${(estTokens % 1000) / 100}k" else estTokens.toString()
+                        Text(
+                            text = " · ~${tokenText}tk",
+                            color = ColorTextMuted,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+                    }
                 }
             }
         }
@@ -1053,10 +1129,10 @@ private fun getFileName(context: Context, uri: Uri): String? {
 
 @Composable
 fun ConfigDialog(viewModel: MiauChatViewModel) {
-    var urlInput by remember { mutableStateOf(viewModel.apiUrl) }
-    var keyInput by remember { mutableStateOf(viewModel.apiKey) }
-    var modelInput by remember { mutableStateOf(viewModel.apiModel) }
-    var exaKeyInput by remember { mutableStateOf(viewModel.exaApiKey) }
+    var urlInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiUrl) }
+    var keyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiKey) }
+    var modelInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiModel) }
+    var exaKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.exaApiKey) }
 
     Dialog(onDismissRequest = { viewModel.showConfigDialog = false }) {
         Card(
@@ -1072,6 +1148,51 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                     .fillMaxWidth()
                     .padding(20.dp)
             ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    IconButton(
+                        onClick = {
+                            val idx = viewModel.activePresetIndex - 1
+                            if (idx >= 0) {
+                                viewModel.apiUrl = urlInput.trim()
+                                viewModel.apiKey = keyInput.trim()
+                                viewModel.apiModel = modelInput.trim()
+                                viewModel.exaApiKey = exaKeyInput.trim()
+                                viewModel.switchPreset(idx)
+                            }
+                        },
+                        enabled = viewModel.activePresetIndex > 0
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowLeft, "Previous", tint = ColorAccentBlue, modifier = Modifier.size(24.dp))
+                    }
+                    Text(
+                        text = "Preset ${viewModel.activePresetIndex + 1} / 5",
+                        color = ColorTextPrimary,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                    IconButton(
+                        onClick = {
+                            val idx = viewModel.activePresetIndex + 1
+                            if (idx < 5) {
+                                viewModel.apiUrl = urlInput.trim()
+                                viewModel.apiKey = keyInput.trim()
+                                viewModel.apiModel = modelInput.trim()
+                                viewModel.exaApiKey = exaKeyInput.trim()
+                                viewModel.switchPreset(idx)
+                            }
+                        },
+                        enabled = viewModel.activePresetIndex < 4
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowRight, "Next", tint = ColorAccentBlue, modifier = Modifier.size(24.dp))
+                    }
+                }
+
                 Text(
                     text = "API URL",
                     color = ColorTextPrimary,

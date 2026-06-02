@@ -313,7 +313,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     val messagesArray = JSONArray()
                     messagesArray.put(JSONObject().apply {
                         put("role", "system")
-                        put("content", "You are a helpful assistant. Keep responses appropriate and help the user as much as possible.")
+                        put("content", "You are a helpful assistant. Keep responses appropriate and help the user as much as possible. You have a web_search tool available — use it when the user asks for current information, facts, news, or anything beyond your knowledge cutoff. For questions about production numbers, specifications, or recent events, always search first before answering.")
                     })
                     for (i in 0 until aiEntryIndex) {
                         val log = chatLogs[i]

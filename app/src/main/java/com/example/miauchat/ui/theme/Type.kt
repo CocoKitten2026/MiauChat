@@ -9,6 +9,18 @@ import androidx.compose.ui.unit.sp
 val MonospaceFamily = FontFamily.Monospace
 
 val Typography = Typography(
+    headlineSmall = TextStyle(
+        fontFamily = MonospaceFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 14.sp,
+        lineHeight = 20.sp
+    ),
+    titleMedium = TextStyle(
+        fontFamily = MonospaceFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 13.sp,
+        lineHeight = 18.sp
+    ),
     bodyLarge = TextStyle(
         fontFamily = MonospaceFamily,
         fontWeight = FontWeight.Normal,
@@ -24,12 +36,18 @@ val Typography = Typography(
     bodySmall = TextStyle(
         fontFamily = MonospaceFamily,
         fontWeight = FontWeight.Normal,
-        fontSize = 11.sp,
+        fontSize = 12.sp,
+        lineHeight = 16.sp
+    ),
+    labelMedium = TextStyle(
+        fontFamily = MonospaceFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = 12.sp,
         lineHeight = 16.sp
     ),
     labelSmall = TextStyle(
         fontFamily = MonospaceFamily,
-        fontWeight = FontWeight.Medium,
+        fontWeight = FontWeight.Normal,
         fontSize = 11.sp,
         lineHeight = 16.sp
     )

@@ -1,0 +1,13 @@
+MiauChat is a minimalist, terminal-inspired AI chat client for Android.
+
+Features:
+- Dark monospace interface with a retro terminal aesthetic
+- Connect to any OpenAI-compatible API endpoint
+- Streaming responses with real-time token display
+- Chat history with session persistence
+- Configurable API URL, key, and model
+- Web search integration via Exa
+- Fully offline-capable configuration
+
+All connections go directly to the endpoint you configure.
+No telemetry, no tracking, no ads.

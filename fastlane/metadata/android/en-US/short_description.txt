@@ -1,0 +1,1 @@
+Terminal-style AI chat client with dark monospace interface

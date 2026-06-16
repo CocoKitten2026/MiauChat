@@ -1,0 +1,41 @@
+Categories:
+  - Internet
+  - Development
+License: GPL-3.0-only
+WebSite: https://github.com/CocoKitten2026/MiauChat
+SourceCode: https://github.com/CocoKitten2026/MiauChat
+IssueTracker: https://github.com/CocoKitten2026/MiauChat/issues
+
+Name: MiauChat
+Summary: Terminal-style AI chat client with dark monospace interface
+Description: |
+  MiauChat is a minimalist, terminal-inspired AI chat client
+  for Android.
+
+  Features:
+  - Dark monospace interface with a retro terminal aesthetic
+  - Connect to any OpenAI-compatible API endpoint
+  - Streaming responses with real-time token display
+  - Chat history with session persistence
+  - Configurable API URL, key, and model
+  - Web search integration via Exa
+  - Fully offline-capable configuration
+
+  All connections go directly to the endpoint you configure.
+  No telemetry, no tracking, no ads.
+
+RepoType: git
+Repo: https://github.com/CocoKitten2026/MiauChat.git
+
+Builds:
+  - versionName: "1.1.1"
+    versionCode: 2
+    commit: v1.1.1
+    subdir: app
+    gradle:
+      - yes
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags
+CurrentVersion: "1.1.1"
+CurrentVersionCode: 2

@@ -29,6 +29,7 @@ androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-te
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
 androidx-compose-material-icons-extended = { group = "androidx.compose.material", name = "material-icons-extended" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
+compose-markdown = { group = "com.github.jeziellago", name = "compose-markdown", version = "0.5.0" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

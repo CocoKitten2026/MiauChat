@@ -483,7 +483,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         val systemPrompt = buildString {
             append(systemPromptPresets[activeSystemPromptIndex])
             if (webSearchEnabled) {
-                append(" You have the tool 'web_search' to web search news or random stuff the user asks. And to scrap from exact urls you have the 'firecrawl' tool.")
+                append(" You have the 'web_search' tool: ALWAYS call it (instead of answering from memory) when the user asks about current events, news, recent updates, weather, sports, prices, statistics, product details, or any fact you are not fully certain of, or when the user says 'search', 'look up', or 'google'. You have the 'firecrawl' tool: ALWAYS call it (instead of web_search or guessing) when the user shares a specific URL or asks to open, read, or scrape a specific web page; pass the full URL including the scheme (e.g. https://example.com/page). After a tool call, base your answer on the results it returned and cite the source URLs.")
             }
             if (featureImageGen) {
                 append(" You have the tool 'generate_image' to generate images from text descriptions.")
@@ -1273,8 +1273,10 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         }
     }
 
-    private fun firecrawlFetch(url: String): String {
+    private fun firecrawlFetch(rawUrl: String): String {
         return try {
+            var url = rawUrl.trim().trim('"', '\'', ' ', '>')
+            if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
             val jsonBody = JSONObject()
                 .put("url", url)
                 .put("formats", JSONArray().apply { put(JSONObject().apply { put("type", "markdown") }) })
@@ -1298,7 +1300,17 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 return "Fetch error: $errMsg"
             }
             val data = root.optJSONObject("data")
-            data?.optString("markdown", "")?.takeIf { it.isNotBlank() } ?: "No content found at URL"
+            val markdown = data?.optString("markdown", "")?.takeIf { it.isNotBlank() }
+            if (markdown != null) {
+                if (markdown.length > 8000) {
+                    "${markdown.take(8000)}\n\n[Content truncated: ${markdown.length} characters total]"
+                } else {
+                    markdown
+                }
+            } else {
+                val metaErr = data?.optJSONObject("metadata")?.optString("error", "")
+                if (!metaErr.isNullOrBlank()) "Fetch error: $metaErr" else "No content found at URL"
+            }
         } catch (e: Exception) {
             "Firecrawl error: ${e.message}"
         }

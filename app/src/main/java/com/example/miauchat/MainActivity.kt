@@ -660,13 +660,28 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         return if (tools.length() > 0) tools else null
     }
 
+    private fun forceToolFor(text: String): String? {
+        if (firecrawlApiKey.isEmpty() && !featureImageGen) return null
+        val t = text.lowercase()
+        if (firecrawlApiKey.isNotEmpty() && Regex("https?://|www\\.").containsMatchIn(t)) return "firecrawl"
+        if (webSearchEnabled) {
+            val searchKeywords = listOf(
+                "search", "buscar", "busca", "google", "look up", "find out",
+                "latest", "news", "who won", "score", "weather", "translate"
+            )
+            if (searchKeywords.any { t.contains(it) }) return "web_search"
+        }
+        return null
+    }
+
     private fun buildProviderBody(
         provider: ApiProvider,
         model: String,
         messagesArray: JSONArray,
         systemPrompt: String,
         stream: Boolean,
-        tools: JSONArray? = null
+        tools: JSONArray? = null,
+        forceTool: String? = null
     ): JSONObject {
         return when (provider) {
             ApiProvider.Gemini -> JSONObject().apply {
@@ -677,6 +692,14 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     })
                 }
                 tools?.let { put("tools", it) }
+                if (forceTool != null && tools != null) {
+                    put("toolConfig", JSONObject().apply {
+                        put("functionCallingConfig", JSONObject().apply {
+                            put("mode", "ANY")
+                            put("allowedFunctionNames", JSONArray().apply { put(forceTool) })
+                        })
+                    })
+                }
             }
             ApiProvider.Claude -> JSONObject().apply {
                 put("model", model)
@@ -685,6 +708,12 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 if (systemPrompt.isNotBlank()) put("system", systemPrompt)
                 put("messages", messagesArray)
                 tools?.let { put("tools", it) }
+                if (forceTool != null && tools != null) {
+                    put("tool_choice", JSONObject().apply {
+                        put("type", "tool")
+                        put("name", forceTool)
+                    })
+                }
             }
             else -> JSONObject().apply {
                 put("model", model)
@@ -701,6 +730,14 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 }
                 put("messages", fullMessages)
                 tools?.let { put("tools", it) }
+                if (forceTool != null && tools != null) {
+                    put("tool_choice", JSONObject().apply {
+                        put("type", "function")
+                        put("function", JSONObject().apply {
+                            put("name", forceTool)
+                        })
+                    })
+                }
             }
         }
     }
@@ -1005,7 +1042,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 val (messagesArray, systemPrompt) = convertToProviderMessages(provider, aiEntryIndex, file, messageToSend)
 
                 val toolDefs = buildToolDefinitions(provider)
-                val jsonBody = buildProviderBody(provider, apiModel, messagesArray, systemPrompt, true, toolDefs)
+                val jsonBody = buildProviderBody(provider, apiModel, messagesArray, systemPrompt, true, toolDefs, forceToolFor(messageToSend))
 
                 val requestUrl = providerUrl(provider, apiUrl, apiModel, apiKey)
                 val requestBuilder = Request.Builder()

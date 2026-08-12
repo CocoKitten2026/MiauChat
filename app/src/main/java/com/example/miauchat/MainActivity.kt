@@ -27,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
@@ -68,9 +69,11 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.miauchat.ui.theme.MiauChatTheme
+import com.example.miauchat.ui.theme.MonospaceFamily
 import dev.jeziellago.compose.markdowntext.MarkdownText
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaType
@@ -146,10 +149,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     var apiModel by mutableStateOf(prefs.getString("api_model", "") ?: "")
     var apiProvider by mutableStateOf(ApiProvider.valueOf(prefs.getString("api_provider", ApiProvider.OpenAI.name) ?: ApiProvider.OpenAI.name))
 
-    var exaApiKey by mutableStateOf(prefs.getString("exa_api_key", "") ?: "")
     var firecrawlApiKey by mutableStateOf(prefs.getString("firecrawl_api_key", "") ?: "")
     var imageGenApiKey by mutableStateOf(prefs.getString("image_gen_api_key", "") ?: "")
-    var exaSearchEnabled by mutableStateOf(exaApiKey.isNotEmpty())
+    var webSearchEnabled by mutableStateOf(firecrawlApiKey.isNotEmpty())
     var activePresetIndex by mutableStateOf(0)
     val apiPresets = mutableStateListOf(*Array(5) { ApiPreset() })
 
@@ -247,35 +249,28 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             putString("api_provider", provider.name)
             apply()
         }
-        apiPresets[activePresetIndex] = ApiPreset(url, key, model, exaApiKey, firecrawlApiKey, imageGenApiKey, provider.name)
+        apiPresets[activePresetIndex] = ApiPreset(url, key, model, "", firecrawlApiKey, imageGenApiKey, provider.name)
         persistPresets()
         showConfigDialog = false
-    }
-
-    fun saveExaConfiguration(key: String) {
-        exaApiKey = key
-        prefs.edit().putString("exa_api_key", key).apply()
-        if (key.isNotEmpty()) exaSearchEnabled = true
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, key, firecrawlApiKey, imageGenApiKey, apiProvider.name)
-        persistPresets()
     }
 
     fun saveFirecrawlConfiguration(key: String) {
         firecrawlApiKey = key
         prefs.edit().putString("firecrawl_api_key", key).apply()
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, key, imageGenApiKey, apiProvider.name)
+        if (key.isNotEmpty()) webSearchEnabled = true
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, "", key, imageGenApiKey, apiProvider.name)
         persistPresets()
     }
 
     fun saveImageGenConfiguration(key: String) {
         imageGenApiKey = key
         prefs.edit().putString("image_gen_api_key", key).apply()
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, firecrawlApiKey, key, apiProvider.name)
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, "", firecrawlApiKey, key, apiProvider.name)
         persistPresets()
     }
 
-    fun toggleExaSearch() {
-        exaSearchEnabled = !exaSearchEnabled
+    fun toggleWebSearch() {
+        webSearchEnabled = !webSearchEnabled
     }
 
     fun saveCurrentSession() {
@@ -368,14 +363,14 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     val p = apiPresets[0]
                     apiUrl = p.url; apiKey = p.key; apiModel = p.model
                     apiProvider = try { ApiProvider.valueOf(p.provider) } catch (_: Exception) { ApiProvider.OpenAI }
-                    exaApiKey = p.exaKey; firecrawlApiKey = p.firecrawlKey; imageGenApiKey = p.imageGenKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+                    firecrawlApiKey = p.firecrawlKey; imageGenApiKey = p.imageGenKey; webSearchEnabled = p.firecrawlKey.isNotEmpty()
                     isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
                 }
                 return
             } catch (_: Exception) { }
         }
         apiPresets.clear()
-        apiPresets.add(ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, firecrawlApiKey, imageGenApiKey, apiProvider.name))
+        apiPresets.add(ApiPreset(apiUrl, apiKey, apiModel, "", firecrawlApiKey, imageGenApiKey, apiProvider.name))
         for (i in 1 until 5) apiPresets.add(ApiPreset())
         persistPresets()
     }
@@ -413,11 +408,11 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     fun switchPreset(index: Int) {
         if (index < 0 || index >= apiPresets.size) return
-        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, exaApiKey, firecrawlApiKey, imageGenApiKey, apiProvider.name)
+        apiPresets[activePresetIndex] = ApiPreset(apiUrl, apiKey, apiModel, "", firecrawlApiKey, imageGenApiKey, apiProvider.name)
         val p = apiPresets[index]
         apiUrl = p.url; apiKey = p.key; apiModel = p.model
         apiProvider = try { ApiProvider.valueOf(p.provider) } catch (_: Exception) { ApiProvider.OpenAI }
-        exaApiKey = p.exaKey; firecrawlApiKey = p.firecrawlKey; imageGenApiKey = p.imageGenKey; exaSearchEnabled = p.exaKey.isNotEmpty()
+        firecrawlApiKey = p.firecrawlKey; imageGenApiKey = p.imageGenKey; webSearchEnabled = p.firecrawlKey.isNotEmpty()
         isConnected = p.url.isNotEmpty() && p.key.isNotEmpty() && p.model.isNotEmpty()
         activePresetIndex = index
         persistPresets()
@@ -487,8 +482,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     ): Pair<JSONArray, String> {
         val systemPrompt = buildString {
             append(systemPromptPresets[activeSystemPromptIndex])
-            if (exaSearchEnabled) {
-                append(" You have the tool 'exa' to web search news or random stuff the user asks. And to scrap from exact urls you have 'firecrawl' tool.")
+            if (webSearchEnabled) {
+                append(" You have the tool 'web_search' to web search news or random stuff the user asks. And to scrap from exact urls you have the 'firecrawl' tool.")
             }
             if (featureImageGen) {
                 append(" You have the tool 'generate_image' to generate images from text descriptions.")
@@ -594,7 +589,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     }
 
     private fun buildToolDefinitions(provider: ApiProvider): JSONArray? {
-        if (!exaSearchEnabled && !featureImageGen) return null
+        if (!webSearchEnabled && !featureImageGen) return null
         val tools = JSONArray()
         val addTool = { name: String, description: String, params: JSONObject ->
             when (provider) {
@@ -622,8 +617,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 })
             }
         }
-        if (exaSearchEnabled) {
-            addTool("exa", "Search the web for current information. Use this for general, semantic, or news queries — not for specific URLs.", JSONObject().apply {
+        if (webSearchEnabled) {
+            addTool("web_search", "Search the web for current information. Use this for general, semantic, or news queries — not for specific URLs.", JSONObject().apply {
                 put("type", "object")
                 put("properties", JSONObject().apply {
                     put("query", JSONObject().apply {
@@ -1038,12 +1033,12 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 }
                 reader.close()
 
-                if (toolCallId != null && (toolCallFunctionName == "exa" || toolCallFunctionName == "firecrawl" || toolCallFunctionName == "generate_image")) {
+                if (toolCallId != null && (toolCallFunctionName == "web_search" || toolCallFunctionName == "firecrawl" || toolCallFunctionName == "generate_image")) {
                     val argsJson = JSONObject(toolCallArgsBuilder.toString())
                     val toolResult = when (toolCallFunctionName) {
-                        "exa" -> {
+                        "web_search" -> {
                             val searchQuery = argsJson.optString("query", messageToSend)
-                            exaSearch(searchQuery)
+                            firecrawlSearch(searchQuery)
                         }
                         "firecrawl" -> {
                             val url = argsJson.optString("url", "")
@@ -1194,41 +1189,43 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         }
     }
 
-    private fun exaSearch(query: String): String {
+    private fun firecrawlSearch(query: String): String {
         return try {
             val jsonBody = JSONObject().apply {
                 put("query", query)
-                put("type", "auto")
-                put("numResults", 5)
-                put("contents", JSONObject().apply {
-                    put("highlights", true)
-                })
+                put("limit", 5)
+                put("formats", JSONArray().apply { put("markdown") })
             }
             val request = Request.Builder()
-                .url("https://api.exa.ai/search")
-                .addHeader("x-api-key", exaApiKey)
+                .url("https://api.firecrawl.dev/v1/search")
+                .addHeader("Authorization", "Bearer $firecrawlApiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
             val response = client.newCall(request).execute()
+            if (!response.isSuccessful) return "Search error: HTTP ${response.code}"
             val body = response.body?.string() ?: return "No results"
             val root = JSONObject(body)
-            val results = root.optJSONArray("results")
+            if (!root.optBoolean("success", false)) {
+                val errObj = root.optJSONObject("error")
+                val errMsg = errObj?.optString("message", "unknown") ?: root.optString("error", "unknown")
+                return "Search error: $errMsg"
+            }
+            val results = root.optJSONArray("data")
             if (results == null || results.length() == 0) return "No results"
             val sb = StringBuilder()
             for (i in 0 until results.length()) {
                 val r = results.getJSONObject(i)
-                sb.appendLine("Title: ${r.optString("title")}")
-                sb.appendLine("URL: ${r.optString("url")}")
-                val highlights = r.optJSONArray("highlights")
-                if (highlights != null) {
-                    for (j in 0 until highlights.length()) {
-                        sb.appendLine(highlights.getString(j))
-                    }
-                }
+                val title = r.optString("title")
+                val url = r.optString("url")
+                val markdown = r.optString("markdown")
+                if (title.isBlank() && markdown.isBlank()) continue
+                sb.appendLine("Title: $title")
+                sb.appendLine("URL: $url")
+                if (markdown.isNotBlank()) sb.appendLine(markdown.take(2000))
                 sb.appendLine()
             }
-            sb.toString()
+            sb.toString().ifBlank { "No results" }
         } catch (e: Exception) {
             "Search error: ${e.message}"
         }
@@ -1327,8 +1324,9 @@ fun MiauChatMainScreen(viewModel: MiauChatViewModel) {
     }
 
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+    val drawerScope = rememberCoroutineScope()
     LaunchedEffect(viewModel.showHistoryDialog) {
-        if (viewModel.showHistoryDialog) drawerState.open() else drawerState.close()
+        if (!viewModel.showHistoryDialog) drawerState.close()
     }
 
     ModalNavigationDrawer(
@@ -1358,7 +1356,10 @@ fun MiauChatMainScreen(viewModel: MiauChatViewModel) {
                     .padding(bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = { viewModel.showHistoryDialog = true }) {
+                IconButton(onClick = {
+                    viewModel.showHistoryDialog = true
+                    drawerScope.launch { drawerState.open() }
+                }) {
                     Icon(
                         imageVector = Icons.Default.Menu,
                         contentDescription = "History",
@@ -1516,6 +1517,28 @@ fun MiauChatMainScreen(viewModel: MiauChatViewModel) {
     }
 }
 
+private sealed interface MessageSegment {
+    data class Text(val text: String) : MessageSegment
+    data class Code(val language: String, val code: String) : MessageSegment
+}
+
+private val codeFenceRegex = Regex("```([\\w+\\-]*)[\\r\\n]+(.*?)```", setOf(RegexOption.DOT_MATCHES_ALL))
+
+private fun extractCodeBlocks(content: String): List<MessageSegment> {
+    if ("```" !in content) return listOf(MessageSegment.Text(content))
+    val segments = mutableListOf<MessageSegment>()
+    var lastEnd = 0
+    for (m in codeFenceRegex.findAll(content)) {
+        if (m.range.first > lastEnd) {
+            segments.add(MessageSegment.Text(content.substring(lastEnd, m.range.first)))
+        }
+        segments.add(MessageSegment.Code(m.groupValues[1], m.groupValues[2].trimEnd()))
+        lastEnd = m.range.last + 1
+    }
+    if (lastEnd < content.length) segments.add(MessageSegment.Text(content.substring(lastEnd)))
+    return segments
+}
+
 @Composable
 fun ChatLine(log: LogEntry) {
     val colorScheme = MaterialTheme.colorScheme
@@ -1541,7 +1564,12 @@ fun ChatLine(log: LogEntry) {
         } else {
             Surface(
                 shape = if (isUser) RoundedCornerShape(20.dp, 20.dp, 20.dp, 8.dp) else RoundedCornerShape(12.dp),
-                color = if (isUser) colorScheme.surface else Color.Transparent,
+                color = colorScheme.surface,
+                border = if (isUser) {
+                    BorderStroke(1.dp, colorScheme.primary.copy(alpha = 0.45f))
+                } else {
+                    BorderStroke(1.dp, colorScheme.outline)
+                },
                 modifier = Modifier.widthIn(max = 340.dp)
             ) {
                 Box(
@@ -1609,10 +1637,7 @@ fun ChatLine(log: LogEntry) {
                             Spacer(modifier = Modifier.height(6.dp))
                         }
                     }
-                    MarkdownText(
-                        markdown = log.content,
-                        style = typography.bodyLarge.copy(color = colorScheme.onSurface),
-                    )
+                    MessageContent(log.content)
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
                         horizontalArrangement = Arrangement.End
@@ -1637,6 +1662,88 @@ fun ChatLine(log: LogEntry) {
             }
         }
     }
+    }
+}
+
+@Composable
+private fun MessageContent(markdown: String) {
+    val colorScheme = MaterialTheme.colorScheme
+    val typography = MaterialTheme.typography
+    val clipboardManager = LocalClipboardManager.current
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        val segments = extractCodeBlocks(markdown)
+        for (segment in segments) {
+            when (segment) {
+                is MessageSegment.Text -> MarkdownText(
+                    markdown = segment.text,
+                    style = typography.bodyLarge.copy(color = colorScheme.onSurface),
+                )
+                is MessageSegment.Code -> {
+                    var copied by remember(segment.code) { mutableStateOf(false) }
+                    LaunchedEffect(copied) {
+                        if (copied) {
+                            delay(1500)
+                            copied = false
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = colorScheme.surface,
+                        border = BorderStroke(1.dp, colorScheme.outline),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(colorScheme.surfaceVariant)
+                                    .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = segment.language.ifBlank { "Code" }.uppercase(),
+                                    color = colorScheme.primary,
+                                    style = typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                IconButton(
+                                    onClick = {
+                                        clipboardManager.setText(AnnotatedString(segment.code))
+                                        copied = true
+                                    },
+                                    modifier = Modifier.size(32.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.ContentCopy,
+                                        contentDescription = "Copy code",
+                                        tint = if (copied) colorScheme.primary else colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
+                                Text(
+                                    text = if (copied) "Copied" else "Copy",
+                                    color = if (copied) colorScheme.primary else colorScheme.onSurfaceVariant,
+                                    style = typography.labelSmall,
+                                    modifier = Modifier.padding(end = 8.dp)
+                                )
+                            }
+                            SelectionContainer {
+                                Text(
+                                    text = segment.code,
+                                    color = colorScheme.onSurface,
+                                    style = typography.bodyMedium.copy(fontFamily = MonospaceFamily),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(max = 300.dp)
+                                        .verticalScroll(rememberScrollState())
+                                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1896,12 +2003,12 @@ fun InputCard(viewModel: MiauChatViewModel) {
             }
         }
 
-        if (viewModel.featureWebSearch && viewModel.exaApiKey.isNotEmpty()) {
-            IconButton(onClick = { viewModel.toggleExaSearch() }) {
+        if (viewModel.featureWebSearch && viewModel.firecrawlApiKey.isNotEmpty()) {
+            IconButton(onClick = { viewModel.toggleWebSearch() }) {
                 Icon(
-                    imageVector = if (viewModel.exaSearchEnabled) Icons.Default.Search else Icons.Default.Language,
+                    imageVector = if (viewModel.webSearchEnabled) Icons.Default.Search else Icons.Default.Language,
                     contentDescription = "Web search",
-                    tint = if (viewModel.exaSearchEnabled) colorScheme.primary else colorScheme.onSurfaceVariant,
+                    tint = if (viewModel.webSearchEnabled) colorScheme.primary else colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
             }
@@ -2517,7 +2624,6 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
     var urlInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiUrl) }
     var keyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiKey) }
     var modelInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiModel) }
-    var exaKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.exaApiKey) }
     var firecrawlKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.firecrawlApiKey) }
     var imageGenKeyInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.imageGenApiKey) }
     var providerInput by remember(viewModel.activePresetIndex) { mutableStateOf(viewModel.apiProvider) }
@@ -2548,7 +2654,6 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                                 viewModel.apiUrl = urlInput.trim()
                                 viewModel.apiKey = keyInput.trim()
                                 viewModel.apiModel = modelInput.trim()
-                                viewModel.exaApiKey = exaKeyInput.trim()
                                 viewModel.firecrawlApiKey = firecrawlKeyInput.trim()
                                 viewModel.imageGenApiKey = imageGenKeyInput.trim()
                                 viewModel.switchPreset(idx)
@@ -2571,7 +2676,6 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                                 viewModel.apiUrl = urlInput.trim()
                                 viewModel.apiKey = keyInput.trim()
                                 viewModel.apiModel = modelInput.trim()
-                                viewModel.exaApiKey = exaKeyInput.trim()
                                 viewModel.firecrawlApiKey = firecrawlKeyInput.trim()
                                 viewModel.imageGenApiKey = imageGenKeyInput.trim()
                                 viewModel.switchPreset(idx)
@@ -2671,26 +2775,7 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                 }
 
                 Text(
-                    text = "Exa API Key (web search)",
-                    color = colorScheme.onSurface,
-                    style = typography.labelSmall,
-                    modifier = Modifier.padding(bottom = 4.dp)
-                )
-                OutlinedTextField(
-                    value = exaKeyInput,
-                    onValueChange = { exaKeyInput = it },
-                    placeholder = { Text("exa-...", color = colorScheme.onSurfaceVariant, style = typography.bodySmall) },
-                    textStyle = typography.bodySmall.copy(color = colorScheme.onSurface),
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = colorScheme.primary, unfocusedBorderColor = colorScheme.onSurfaceVariant
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp)
-                )
-
-                Text(
-                    text = "Firecrawl API Key (URL scraping)",
+                    text = "Firecrawl API Key (web search + URL scraping)",
                     color = colorScheme.onSurface,
                     style = typography.labelSmall,
                     modifier = Modifier.padding(bottom = 4.dp)
@@ -2742,7 +2827,6 @@ fun ConfigDialog(viewModel: MiauChatViewModel) {
                             viewModel.saveConfiguration(
                                 url = urlInput.trim(), key = keyInput.trim(), model = modelInput.trim(), provider = providerInput
                             )
-                            viewModel.saveExaConfiguration(key = exaKeyInput.trim())
                             viewModel.saveFirecrawlConfiguration(key = firecrawlKeyInput.trim())
                             viewModel.saveImageGenConfiguration(key = imageGenKeyInput.trim())
                         }

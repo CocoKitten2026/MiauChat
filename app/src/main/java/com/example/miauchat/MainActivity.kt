@@ -707,8 +707,36 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         val finishReason: String?,
         val toolCallId: String?,
         val toolCallName: String?,
-        val toolCallArgsDelta: String?
+        val toolCallArgsDelta: String?,
+        val toolCallIndex: Int = 0,
+        val thoughtSignature: String? = null
     )
+
+    private data class ToolCallProgress(
+        var id: String? = null,
+        var name: String? = null,
+        val args: StringBuilder = StringBuilder(),
+        var signature: String? = null
+    )
+
+    private fun parseToolArgs(call: ToolCallProgress, fallbackQuery: String): JSONObject {
+        val raw = call.args.toString().trim()
+        return try {
+            JSONObject(raw)
+        } catch (e: Exception) {
+            val start = raw.indexOf('{')
+            val end = raw.lastIndexOf('}')
+            if (start >= 0 && end > start) {
+                try {
+                    JSONObject(raw.substring(start, end + 1))
+                } catch (e2: Exception) {
+                    JSONObject().apply { put("query", fallbackQuery) }
+                }
+            } else {
+                JSONObject().apply { put("query", fallbackQuery) }
+            }
+        }
+    }
 
     private fun parseProviderSSE(provider: ApiProvider, line: String): SSEResult? {
         if (!line.startsWith("data: ")) return null
@@ -728,6 +756,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         val tcId = if (tcArray != null && tcArray.length() > 0) tcArray.getJSONObject(0).optString("id", null) else null
                         val tcName = if (tcArray != null && tcArray.length() > 0) tcArray.getJSONObject(0).optJSONObject("function")?.optString("name", null) else null
                         val tcArgs = if (tcArray != null && tcArray.length() > 0) tcArray.getJSONObject(0).optJSONObject("function")?.optString("arguments", null) else null
+                        val tcIndex = if (tcArray != null && tcArray.length() > 0) tcArray.getJSONObject(0).optInt("index", 0) else 0
                         val content = if (delta != null && delta.has("content") && !delta.isNull("content")) delta.getString("content") else null
                         val reasoning = if (delta != null && delta.has("reasoning_content") && !delta.isNull("reasoning_content")) delta.getString("reasoning_content") else null
                         SSEResult(
@@ -736,7 +765,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                             finishReason = if (finish == "tool_calls") "tool_calls" else finish,
                             toolCallId = tcId,
                             toolCallName = tcName,
-                            toolCallArgsDelta = tcArgs
+                            toolCallArgsDelta = tcArgs,
+                            toolCallIndex = tcIndex
                         )
                     } else null
                 }
@@ -749,10 +779,16 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         val text = if (parts != null && parts.length() > 0) parts.getJSONObject(0).optString("text", null) else null
                         val finish = candidate.optString("finishReason", null)
                         val fc = if (parts != null && parts.length() > 0) parts.getJSONObject(0).optJSONObject("functionCall") else null
+                        val fcSig = if (fc != null) parts?.getJSONObject(0)?.optString("thoughtSignature", null) else null
                         if (fc != null) {
-                            SSEResult(null, null, "tool_calls", fc.optString("name", null), fc.optString("name", null), fc.optJSONObject("args")?.toString())
+                            SSEResult(null, null, "tool_calls", fc.optString("name", null), fc.optString("name", null), fc.optJSONObject("args")?.toString(), 0, fcSig)
                         } else {
-                            SSEResult(text, null, finish, null, null, null)
+                            val sig = if (parts != null && parts.length() > 0) parts.getJSONObject(0).optString("thoughtSignature", null) else null
+                            if (sig != null) {
+                                SSEResult(text, null, finish, null, null, null, 0, sig)
+                            } else {
+                                SSEResult(text, null, finish, null, null, null)
+                            }
                         }
                     } else null
                 }
@@ -996,9 +1032,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
                 var isStreaming = false
                 var line: String?
-                var toolCallId: String? = null
-                var toolCallFunctionName: String? = null
-                val toolCallArgsBuilder = StringBuilder()
+                var pendingThoughtSignature: String? = null
+                val toolCalls = mutableMapOf<Int, ToolCallProgress>()
 
                 while (reader.readLine().also { line = it } != null) {
                     val currentLine = line ?: continue
@@ -1009,10 +1044,20 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     if (result != null) {
                         isStreaming = true
                         if (result.finishReason == "stop" || result.finishReason == "STOP") break
-                        if (result.toolCallId != null) toolCallId = result.toolCallId
-                        if (result.toolCallName != null) toolCallFunctionName = result.toolCallName
-                        if (result.toolCallArgsDelta != null) {
-                            toolCallArgsBuilder.append(result.toolCallArgsDelta)
+                        if (result.thoughtSignature != null) pendingThoughtSignature = result.thoughtSignature
+                        if (result.toolCallName != null) {
+                            if (provider == ApiProvider.OpenAI || provider == ApiProvider.OpenCode) {
+                                val entry = toolCalls.getOrPut(result.toolCallIndex) { ToolCallProgress() }
+                                entry.id = result.toolCallId ?: entry.id
+                                entry.name = result.toolCallName
+                                entry.signature = result.thoughtSignature
+                            } else {
+                                toolCalls.clear()
+                                toolCalls[0] = ToolCallProgress(result.toolCallId, result.toolCallName, StringBuilder(result.toolCallArgsDelta ?: ""), result.thoughtSignature ?: pendingThoughtSignature)
+                            }
+                        }
+                        if (result.toolCallArgsDelta != null && (provider == ApiProvider.OpenAI || provider == ApiProvider.OpenCode)) {
+                            toolCalls.getOrPut(result.toolCallIndex) { ToolCallProgress() }.args.append(result.toolCallArgsDelta)
                         }
                         if (result.finishReason == "tool_calls") {
                             break
@@ -1033,121 +1078,132 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 }
                 reader.close()
 
-                if (toolCallId != null && (toolCallFunctionName == "web_search" || toolCallFunctionName == "firecrawl" || toolCallFunctionName == "generate_image")) {
-                    val rawArgs = toolCallArgsBuilder.toString().trim()
-                    val argsJson = try {
-                        JSONObject(rawArgs)
-                    } catch (e: Exception) {
-                        val start = rawArgs.indexOf('{')
-                        val end = rawArgs.lastIndexOf('}')
-                        if (start >= 0 && end > start) {
-                            try {
-                                JSONObject(rawArgs.substring(start, end + 1))
-                            } catch (e2: Exception) {
-                                JSONObject().apply { put("query", messageToSend) }
+                if (toolCalls.isNotEmpty()) {
+                    val executed = mutableListOf<Pair<ToolCallProgress, String>>()
+                    for (slot in toolCalls.keys.sorted()) {
+                        val call = toolCalls[slot] ?: continue
+                        val callName = call.name ?: continue
+                        if (callName == "web_search" || callName == "firecrawl" || callName == "generate_image") {
+                            val argsJson = parseToolArgs(call, messageToSend)
+                            val toolResult = when (callName) {
+                                "web_search" -> {
+                                    val searchQuery = argsJson.optString("query", messageToSend)
+                                    firecrawlSearch(searchQuery)
+                                }
+                                "firecrawl" -> {
+                                    val url = argsJson.optString("url", "")
+                                    if (url.isNotEmpty()) firecrawlFetch(url) else "No URL provided"
+                                }
+                                else -> {
+                                    val prompt = argsJson.optString("prompt", messageToSend)
+                                    val (b64, revised) = generateImage(prompt)
+                                    if (b64.isNotEmpty()) {
+                                        generatedImageBase64 = b64
+                                        generatedImageMimeType = "image/png"
+                                        "Generated image based on: $revised"
+                                    } else {
+                                        "Failed to generate image: $revised"
+                                    }
+                                }
                             }
-                        } else {
-                            JSONObject().apply { put("query", messageToSend) }
+                            executed.add(call to toolResult)
                         }
-                    }
-                    val toolResult = when (toolCallFunctionName) {
-                        "web_search" -> {
-                            val searchQuery = argsJson.optString("query", messageToSend)
-                            firecrawlSearch(searchQuery)
-                        }
-                        "firecrawl" -> {
-                            val url = argsJson.optString("url", "")
-                            if (url.isNotEmpty()) firecrawlFetch(url) else "No URL provided"
-                        }
-                        "generate_image" -> {
-                            val prompt = argsJson.optString("prompt", messageToSend)
-                            val (b64, revised) = generateImage(prompt)
-                            if (b64.isNotEmpty()) {
-                                generatedImageBase64 = b64
-                                generatedImageMimeType = "image/png"
-                                "Generated image based on: $revised"
-                            } else {
-                                "Failed to generate image: $revised"
-                            }
-                        }
-                        else -> "Unknown tool"
                     }
 
-                    val toolMessagesArray = JSONArray()
-                    val (prevMessages, _) = convertToProviderMessages(provider, aiEntryIndex, file, "")
-                    for (i in 0 until prevMessages.length()) {
-                        toolMessagesArray.put(prevMessages.getJSONObject(i))
-                    }
+                    if (executed.isNotEmpty()) {
+                        val toolMessagesArray = JSONArray()
+                        val (prevMessages, _) = convertToProviderMessages(provider, aiEntryIndex, file, "")
+                        for (i in 0 until prevMessages.length()) {
+                            toolMessagesArray.put(prevMessages.getJSONObject(i))
+                        }
 
-                    when (provider) {
-                        ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "model")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("functionCall", JSONObject().apply {
-                                        put("name", toolCallFunctionName)
-                                        put("args", argsJson)
-                                    })
-                                })
-                            })
-                        })
-                        ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "assistant")
-                            put("content", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("type", "tool_use")
-                                    put("id", toolCallId)
-                                    put("name", toolCallFunctionName)
-                                    put("input", argsJson)
-                                })
-                            })
-                        })
-                        else -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "assistant")
-                            put("content", JSONObject.NULL)
-                            put("tool_calls", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("id", toolCallId)
-                                    put("type", "function")
-                                    put("function", JSONObject().apply {
-                                        put("name", toolCallFunctionName)
-                                        put("arguments", argsJson.toString())
-                                    })
-                                })
-                            })
-                        })
-                    }
-                    when (provider) {
-                        ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "user")
-                            put("parts", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("functionResponse", JSONObject().apply {
-                                        put("name", toolCallFunctionName)
-                                        put("response", JSONObject().apply {
-                                            put("result", toolResult)
+                        when (provider) {
+                            ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
+                                put("role", "model")
+                                put("parts", JSONArray().apply {
+                                    for ((call, _) in executed) {
+                                        put(JSONObject().apply {
+                                            put("functionCall", JSONObject().apply {
+                                                put("name", call.name)
+                                                put("args", parseToolArgs(call, messageToSend))
+                                            })
+                                            if (call.signature != null) put("thoughtSignature", call.signature)
                                         })
-                                    })
+                                    }
                                 })
                             })
-                        })
-                        ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "user")
-                            put("content", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("type", "tool_result")
-                                    put("tool_use_id", toolCallId)
-                                    put("content", toolResult)
+                            ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
+                                put("role", "assistant")
+                                put("content", JSONArray().apply {
+                                    for ((i, pair) in executed.withIndex()) {
+                                            val call = pair.first
+                                            put(JSONObject().apply {
+                                                put("type", "tool_use")
+                                                put("id", call.id ?: "toolu_$i")
+                                                put("name", call.name)
+                                                put("input", parseToolArgs(call, messageToSend))
+                                            })
+                                        }
                                 })
                             })
-                        })
-                        else -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "tool")
-                            put("tool_call_id", toolCallId)
-                            put("content", toolResult)
-                        })
-                    }
-                    fullContent = ""
+                            else -> toolMessagesArray.put(JSONObject().apply {
+                                put("role", "assistant")
+                                put("content", JSONObject.NULL)
+                                if (fullReasoning.isNotBlank()) {
+                                    put("reasoning_content", fullReasoning)
+                                }
+                                put("tool_calls", JSONArray().apply {
+                                    for ((i, pair) in executed.withIndex()) {
+                                        val call = pair.first
+                                        put(JSONObject().apply {
+                                            put("id", call.id ?: "call_$i")
+                                            put("type", "function")
+                                            put("function", JSONObject().apply {
+                                                put("name", call.name)
+                                                put("arguments", parseToolArgs(call, messageToSend).toString())
+                                            })
+                                        })
+                                    }
+                                })
+                            })
+                        }
+                        when (provider) {
+                            ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
+                                put("role", "user")
+                                put("parts", JSONArray().apply {
+                                    for ((call, result) in executed) {
+                                        put(JSONObject().apply {
+                                            put("functionResponse", JSONObject().apply {
+                                                put("name", call.name)
+                                                put("response", JSONObject().apply {
+                                                    put("result", result)
+                                                })
+                                            })
+                                        })
+                                    }
+                                })
+                            })
+                            ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
+                                put("role", "user")
+                                put("content", JSONArray().apply {
+                                    for ((call, result) in executed) {
+                                        put(JSONObject().apply {
+                                            put("type", "tool_result")
+                                            put("tool_use_id", call.id)
+                                            put("content", result)
+                                        })
+                                    }
+                                })
+                            })
+                            else -> for ((call, result) in executed) {
+                                toolMessagesArray.put(JSONObject().apply {
+                                    put("role", "tool")
+                                    put("tool_call_id", call.id)
+                                    put("content", result)
+                                })
+                            }
+                        }
+                        fullContent = ""
 
                     val loopBody = buildProviderBody(provider, apiModel, toolMessagesArray, systemPromptPresets[activeSystemPromptIndex], true, null)
                     val loopRequest = Request.Builder()
@@ -1213,6 +1269,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     generatedImageMimeType = null
                     saveCurrentSession()
                     return@launch
+                    }
                 }
 
                 if (!isStreaming && fullContent.isBlank()) {

@@ -779,6 +779,12 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         }
     }
 
+    private fun extractUrl(text: String): String? {
+        val match = Regex("https?://[^\\s\"'<>]+").find(text) ?: Regex("www\\.[^\\s\"'<>]+").find(text) ?: return null
+        val trimmed = match.value.trimEnd('.', ',', ')', ';', ':', '!', '?', '"', '\'')
+        return if (trimmed.startsWith("http")) trimmed else "https://$trimmed"
+    }
+
     private fun parseProviderSSE(provider: ApiProvider, line: String): SSEResult? {
         if (!line.startsWith("data: ")) return null
         val data = line.removePrefix("data: ").trim()
@@ -1122,7 +1128,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 reader.close()
 
                 if (toolCalls.isNotEmpty()) {
-                    val executed = mutableListOf<Pair<ToolCallProgress, String>>()
+                    var executed = mutableListOf<Pair<ToolCallProgress, String>>()
                     for (slot in toolCalls.keys.sorted()) {
                         val call = toolCalls[slot] ?: continue
                         val callName = call.name ?: continue
@@ -1134,8 +1140,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                     firecrawlSearch(searchQuery)
                                 }
                                 "firecrawl" -> {
-                                    val url = argsJson.optString("url", "")
-                                    if (url.isNotEmpty()) firecrawlFetch(url) else "No URL provided"
+                                    var url = argsJson.optString("url", "")
+                                    if (url.isBlank()) url = extractUrl(messageToSend).orEmpty()
+                                    if (url.isNotBlank()) firecrawlFetch(url) else "No URL provided in message"
                                 }
                                 else -> {
                                     val prompt = argsJson.optString("prompt", messageToSend)
@@ -1159,6 +1166,11 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         for (i in 0 until prevMessages.length()) {
                             toolMessagesArray.put(prevMessages.getJSONObject(i))
                         }
+                        fullContent = ""
+                        fullReasoning = ""
+                        var loopRounds = 0
+                        while (true) {
+                            loopRounds++
 
                         when (provider) {
                             ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
@@ -1246,9 +1258,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                 })
                             }
                         }
-                        fullContent = ""
-
-                    val loopBody = buildProviderBody(provider, apiModel, toolMessagesArray, systemPromptPresets[activeSystemPromptIndex], true, null)
+                        val loopBody = buildProviderBody(provider, apiModel, toolMessagesArray, systemPromptPresets[activeSystemPromptIndex], true, null)
                     val loopRequest = Request.Builder()
                         .url(providerUrl(provider, apiUrl, apiModel, apiKey))
                         .addHeader("Content-Type", "application/json")
@@ -1269,14 +1279,33 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         if (rawBody.startsWith("data:")) {
                             val loopReader = rawBody.reader().buffered()
                             var lLine: String?
+                            val roundToolCalls = mutableMapOf<Int, ToolCallProgress>()
+                            var roundSignature: String? = pendingThoughtSignature
                             while (loopReader.readLine().also { lLine = it } != null) {
                                 val lCurrent = lLine ?: continue
                                 if (provider == ApiProvider.Claude && lCurrent.startsWith("event: ")) continue
                                 val lResult = parseProviderSSE(provider, lCurrent)
                                 if (lResult != null) {
                                     isLoopStreaming = true
-                                    if (lResult.finishReason == "stop" || lResult.finishReason == "STOP") break
-                                    if (lResult.toolCallId != null || lResult.finishReason == "tool_calls") break
+                                    if (lResult.thoughtSignature != null) roundSignature = lResult.thoughtSignature
+                                    if (lResult.toolCallName != null) {
+                                        if (provider == ApiProvider.OpenAI || provider == ApiProvider.OpenCode) {
+                                            val entry = roundToolCalls.getOrPut(lResult.toolCallIndex) { ToolCallProgress() }
+                                            entry.id = lResult.toolCallId ?: entry.id
+                                            entry.name = lResult.toolCallName
+                                            entry.signature = lResult.thoughtSignature
+                                        } else {
+                                            roundToolCalls.clear()
+                                            roundToolCalls[0] = ToolCallProgress(lResult.toolCallId, lResult.toolCallName, StringBuilder(lResult.toolCallArgsDelta ?: ""), lResult.thoughtSignature ?: roundSignature)
+                                        }
+                                    }
+                                    if (lResult.toolCallArgsDelta != null && (provider == ApiProvider.OpenAI || provider == ApiProvider.OpenCode)) {
+                                        roundToolCalls.getOrPut(lResult.toolCallIndex) { ToolCallProgress() }.args.append(lResult.toolCallArgsDelta)
+                                    }
+                                    if (lResult.finishReason == "tool_calls") break
+                                    if (lResult.finishReason == "stop" || lResult.finishReason == "STOP") {
+                                        if (lResult.toolCallName == null && lResult.toolCallArgsDelta == null) break
+                                    }
                                     if (lResult.content != null) {
                                         fullContent += lResult.content
                                         streamingContent = fullContent
@@ -1292,6 +1321,44 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                 }
                             }
                             loopReader.close()
+
+                            if (roundToolCalls.isNotEmpty() && loopRounds < 2) {
+                                val roundExecuted = mutableListOf<Pair<ToolCallProgress, String>>()
+                                for (slot in roundToolCalls.keys.sorted()) {
+                                    val call = roundToolCalls[slot] ?: continue
+                                    val callName = call.name ?: continue
+                                    if (callName == "web_search" || callName == "firecrawl" || callName == "generate_image") {
+                                        val argsJson = parseToolArgs(call, messageToSend)
+                                        val toolResult = when (callName) {
+                                            "web_search" -> {
+                                                val searchQuery = argsJson.optString("query", messageToSend)
+                                                firecrawlSearch(searchQuery)
+                                            }
+                                            "firecrawl" -> {
+                                                var url = argsJson.optString("url", "")
+                                                if (url.isBlank()) url = extractUrl(messageToSend).orEmpty()
+                                                if (url.isNotBlank()) firecrawlFetch(url) else "No URL provided in message"
+                                            }
+                                            else -> {
+                                                val prompt = argsJson.optString("prompt", messageToSend)
+                                                val (b64, revised) = generateImage(prompt)
+                                                if (b64.isNotEmpty()) {
+                                                    generatedImageBase64 = b64
+                                                    generatedImageMimeType = "image/png"
+                                                    "Generated image based on: $revised"
+                                                } else {
+                                                    "Failed to generate image: $revised"
+                                                }
+                                            }
+                                        }
+                                        roundExecuted.add(call to toolResult)
+                                    }
+                                }
+                                if (roundExecuted.isNotEmpty()) {
+                                    executed = roundExecuted
+                                    continue
+                                }
+                            }
                         } else if (rawBody.isNotBlank()) {
                             fullContent = parseProviderNonStreaming(provider, rawBody)
                         } else if (!isLoopStreaming && fullContent.isBlank()) {
@@ -1300,6 +1367,8 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     } else {
                         val errorBody = loopResponse.body?.string() ?: "no body"
                         fullContent = "Tool call follow-up failed (HTTP ${loopResponse.code}): ${errorBody.take(400)}"
+                    }
+                    break
                     }
 
                     val finalEntry = if (!generatedImageBase64.isNullOrEmpty()) {
@@ -1390,8 +1459,14 @@ class MiauChatViewModel(context: Context) : ViewModel() {
             if (!url.startsWith("http://") && !url.startsWith("https://")) url = "https://$url"
             val jsonBody = JSONObject()
                 .put("url", url)
-                .put("formats", JSONArray().apply { put(JSONObject().apply { put("type", "markdown") }) })
+                .put("formats", JSONArray().apply {
+                    put(JSONObject().apply { put("type", "markdown") })
+                    put(JSONObject().apply { put("type", "summary") })
+                })
                 .put("onlyMainContent", true)
+                .put("waitFor", 4000)
+                .put("maxAge", 0)
+                .put("proxy", "auto")
                 .put("timeout", 30000)
             val request = Request.Builder()
                 .url("https://api.firecrawl.dev/v2/scrape")
@@ -1411,13 +1486,19 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 return "Fetch error: $errMsg"
             }
             val data = root.optJSONObject("data")
+            val summary = data?.optString("summary", "")?.takeIf { it.isNotBlank() }
             val markdown = data?.optString("markdown", "")?.takeIf { it.isNotBlank() }
+            val sb = StringBuilder()
+            if (summary != null) {
+                sb.appendLine("Summary: $summary")
+                sb.appendLine()
+            }
             if (markdown != null) {
-                if (markdown.length > 8000) {
-                    "${markdown.take(8000)}\n\n[Content truncated: ${markdown.length} characters total]"
-                } else {
-                    markdown
-                }
+                val md = if (markdown.length > 8000) "${markdown.take(8000)}\n\n[Content truncated: ${markdown.length} characters total]" else markdown
+                sb.append(md)
+            }
+            if (sb.isNotBlank()) {
+                sb.toString()
             } else {
                 val metaErr = data?.optJSONObject("metadata")?.optString("error", "")
                 if (!metaErr.isNullOrBlank()) "Fetch error: $metaErr" else "No content found at URL"

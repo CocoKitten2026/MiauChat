@@ -43,6 +43,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.ManageSearch
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -152,6 +153,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     var firecrawlApiKey by mutableStateOf(prefs.getString("firecrawl_api_key", "") ?: "")
     var imageGenApiKey by mutableStateOf(prefs.getString("image_gen_api_key", "") ?: "")
     var webSearchEnabled by mutableStateOf(prefs.getBoolean("web_search_enabled", firecrawlApiKey.isNotEmpty()))
+    var forceSearchNext by mutableStateOf(false)
     var activePresetIndex by mutableStateOf(0)
     val apiPresets = mutableStateListOf(*Array(5) { ApiPreset() })
 
@@ -667,11 +669,31 @@ class MiauChatViewModel(context: Context) : ViewModel() {
         if (webSearchEnabled) {
             val searchKeywords = listOf(
                 "search", "buscar", "busca", "google", "look up", "find out",
-                "latest", "news", "who won", "score", "weather", "translate"
+                "latest", "news", "who won", "score", "weather", "translate",
+                "noticias", "ultima hora", "resultado", "precio de", "cuanto cuesta",
+                "quien es", "como se llama", "averigua", "investiga", "encuentra",
+                "que paso", "que ha pasado", "look for", "search for", "find"
             )
             if (searchKeywords.any { t.contains(it) }) return "web_search"
         }
         return null
+    }
+
+    private fun forcedToolFor(messageToSend: String): String? {
+        if (firecrawlApiKey.isEmpty()) return null
+        val urlBased: () -> String? = {
+            if (firecrawlApiKey.isNotEmpty() && extractUrl(messageToSend) != null) "firecrawl" else null
+        }
+        if (forceSearchNext) {
+            forceSearchNext = false
+            return urlBased() ?: "web_search"
+        }
+        val last = chatLogs.lastOrNull()
+        val isNudge = last?.sender == "AI" && last.reasoning.isNotBlank() && last.content.isBlank() && messageToSend.length <= 15
+        if (isNudge) {
+            return urlBased() ?: "web_search"
+        }
+        return forceToolFor(messageToSend)
     }
 
     private fun buildProviderBody(
@@ -1048,7 +1070,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 val (messagesArray, systemPrompt) = convertToProviderMessages(provider, aiEntryIndex, file, messageToSend)
 
                 val toolDefs = buildToolDefinitions(provider)
-                val jsonBody = buildProviderBody(provider, apiModel, messagesArray, systemPrompt, true, toolDefs, forceToolFor(messageToSend))
+                val jsonBody = buildProviderBody(provider, apiModel, messagesArray, systemPrompt, true, toolDefs, forcedToolFor(messageToSend))
 
                 val requestUrl = providerUrl(provider, apiUrl, apiModel, apiKey)
                 val requestBuilder = Request.Builder()
@@ -2263,6 +2285,17 @@ fun InputCard(viewModel: MiauChatViewModel) {
                     imageVector = if (viewModel.webSearchEnabled) Icons.Default.Search else Icons.Default.Language,
                     contentDescription = "Web search",
                     tint = if (viewModel.webSearchEnabled) colorScheme.primary else colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
+
+        if (viewModel.featureWebSearch && viewModel.firecrawlApiKey.isNotEmpty()) {
+            IconButton(onClick = { viewModel.forceSearchNext = !viewModel.forceSearchNext }) {
+                Icon(
+                    imageVector = Icons.Default.ManageSearch,
+                    contentDescription = "Force search on next message",
+                    tint = if (viewModel.forceSearchNext) colorScheme.primary else colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(20.dp)
                 )
             }

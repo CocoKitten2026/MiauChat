@@ -1043,7 +1043,6 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                     val result = parseProviderSSE(provider, currentLine)
                     if (result != null) {
                         isStreaming = true
-                        if (result.finishReason == "stop" || result.finishReason == "STOP") break
                         if (result.thoughtSignature != null) pendingThoughtSignature = result.thoughtSignature
                         if (result.toolCallName != null) {
                             if (provider == ApiProvider.OpenAI || provider == ApiProvider.OpenCode) {
@@ -1061,6 +1060,9 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         }
                         if (result.finishReason == "tool_calls") {
                             break
+                        }
+                        if (result.finishReason == "stop" || result.finishReason == "STOP") {
+                            if (result.toolCallName == null && result.toolCallArgsDelta == null) break
                         }
                         if (result.content != null) {
                             fullContent += result.content

@@ -151,7 +151,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     var firecrawlApiKey by mutableStateOf(prefs.getString("firecrawl_api_key", "") ?: "")
     var imageGenApiKey by mutableStateOf(prefs.getString("image_gen_api_key", "") ?: "")
-    var webSearchEnabled by mutableStateOf(firecrawlApiKey.isNotEmpty())
+    var webSearchEnabled by mutableStateOf(prefs.getBoolean("web_search_enabled", firecrawlApiKey.isNotEmpty()))
     var activePresetIndex by mutableStateOf(0)
     val apiPresets = mutableStateListOf(*Array(5) { ApiPreset() })
 
@@ -271,6 +271,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     fun toggleWebSearch() {
         webSearchEnabled = !webSearchEnabled
+        prefs.edit().putBoolean("web_search_enabled", webSearchEnabled).apply()
     }
 
     fun saveCurrentSession() {
@@ -482,8 +483,11 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     ): Pair<JSONArray, String> {
         val systemPrompt = buildString {
             append(systemPromptPresets[activeSystemPromptIndex])
-            if (webSearchEnabled) {
-                append(" You have the 'web_search' tool: ALWAYS call it (instead of answering from memory) when the user asks about current events, news, recent updates, weather, sports, prices, statistics, product details, or any fact you are not fully certain of, or when the user says 'search', 'look up', or 'google'. You have the 'firecrawl' tool: ALWAYS call it (instead of web_search or guessing) when the user shares a specific URL or asks to open, read, or scrape a specific web page; pass the full URL including the scheme (e.g. https://example.com/page). After a tool call, base your answer on the results it returned and cite the source URLs.")
+            if (firecrawlApiKey.isNotEmpty()) {
+                if (webSearchEnabled) {
+                    append(" You have the 'web_search' tool: ALWAYS call it (instead of answering from memory) when the user asks about current events, news, recent updates, weather, sports, prices, statistics, product details, or any fact you are not fully certain of, or when the user says 'search', 'look up', or 'google'.")
+                }
+                append(" You have the 'firecrawl' tool: ALWAYS call it (instead of web_search or guessing) when the user shares a specific URL or asks to open, read, or scrape a specific web page; pass the full URL including the scheme (e.g. https://example.com/page). Never announce that you will search or say you will do a search; simply perform the tool call. After a tool call, base your answer on the results it returned and cite the source URLs.")
             }
             if (featureImageGen) {
                 append(" You have the tool 'generate_image' to generate images from text descriptions.")
@@ -589,7 +593,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
     }
 
     private fun buildToolDefinitions(provider: ApiProvider): JSONArray? {
-        if (!webSearchEnabled && !featureImageGen) return null
+        if (!firecrawlApiKey.isNotEmpty() && !featureImageGen) return null
         val tools = JSONArray()
         val addTool = { name: String, description: String, params: JSONObject ->
             when (provider) {
@@ -617,7 +621,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 })
             }
         }
-        if (webSearchEnabled) {
+        if (firecrawlApiKey.isNotEmpty() && webSearchEnabled) {
             addTool("web_search", "Search the web for current information. Use this for general, semantic, or news queries — not for specific URLs.", JSONObject().apply {
                 put("type", "object")
                 put("properties", JSONObject().apply {

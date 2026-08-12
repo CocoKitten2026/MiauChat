@@ -1068,42 +1068,68 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                         ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
                             put("role", "model")
                             put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", "") })
+                                put(JSONObject().apply {
+                                    put("functionCall", JSONObject().apply {
+                                        put("name", toolCallFunctionName)
+                                        put("args", argsJson)
+                                    })
+                                })
                             })
                         })
                         ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
                             put("role", "assistant")
                             put("content", JSONArray().apply {
                                 put(JSONObject().apply {
-                                    put("type", "text")
-                                    put("text", "")
+                                    put("type", "tool_use")
+                                    put("id", toolCallId)
+                                    put("name", toolCallFunctionName)
+                                    put("input", argsJson)
                                 })
                             })
                         })
                         else -> toolMessagesArray.put(JSONObject().apply {
                             put("role", "assistant")
-                            put("content", "")
+                            put("content", JSONObject.NULL)
+                            put("tool_calls", JSONArray().apply {
+                                put(JSONObject().apply {
+                                    put("id", toolCallId)
+                                    put("type", "function")
+                                    put("function", JSONObject().apply {
+                                        put("name", toolCallFunctionName)
+                                        put("arguments", toolCallArgsBuilder.toString())
+                                    })
+                                })
+                            })
                         })
                     }
                     when (provider) {
                         ApiProvider.Gemini -> toolMessagesArray.put(JSONObject().apply {
                             put("role", "user")
                             put("parts", JSONArray().apply {
-                                put(JSONObject().apply { put("text", "[Search results for: ${argsJson.optString("query", messageToSend)}]\n\n$toolResult") })
+                                put(JSONObject().apply {
+                                    put("functionResponse", JSONObject().apply {
+                                        put("name", toolCallFunctionName)
+                                        put("response", JSONObject().apply {
+                                            put("result", toolResult)
+                                        })
+                                    })
+                                })
                             })
                         })
                         ApiProvider.Claude -> toolMessagesArray.put(JSONObject().apply {
                             put("role", "user")
                             put("content", JSONArray().apply {
                                 put(JSONObject().apply {
-                                    put("type", "text")
-                                    put("text", "[Search results for: ${argsJson.optString("query", messageToSend)}]\n\n$toolResult")
+                                    put("type", "tool_result")
+                                    put("tool_use_id", toolCallId)
+                                    put("content", toolResult)
                                 })
                             })
                         })
                         else -> toolMessagesArray.put(JSONObject().apply {
-                            put("role", "user")
-                            put("content", "[Search results for: ${argsJson.optString("query", messageToSend)}]\n\n$toolResult")
+                            put("role", "tool")
+                            put("tool_call_id", toolCallId)
+                            put("content", toolResult)
                         })
                     }
                     fullContent = ""
@@ -1154,7 +1180,12 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                             loopReader.close()
                         } else if (rawBody.isNotBlank()) {
                             fullContent = parseProviderNonStreaming(provider, rawBody)
+                        } else if (!isLoopStreaming && fullContent.isBlank()) {
+                            fullContent = "[Tool was executed, but the model returned an empty response]"
                         }
+                    } else {
+                        val errorBody = loopResponse.body?.string() ?: "no body"
+                        fullContent = "Tool call follow-up failed (HTTP ${loopResponse.code}): ${errorBody.take(400)}"
                     }
 
                     val finalEntry = if (!generatedImageBase64.isNullOrEmpty()) {

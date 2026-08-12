@@ -1191,18 +1191,23 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     private fun firecrawlSearch(query: String): String {
         return try {
-            val jsonBody = JSONObject().apply {
-                put("query", query)
-                put("limit", 5)
-                put("formats", JSONArray().apply { put("markdown") })
-            }
+            val jsonBody = JSONObject()
+                .put("query", query)
+                .put("limit", 5)
+                .put("sources", JSONArray().apply { put(JSONObject().apply { put("type", "web") }) })
+                .put("scrapeOptions", JSONObject().apply {
+                    put("formats", JSONArray().apply { put(JSONObject().apply { put("type", "markdown") }) })
+                })
+                .put("timeout", 45000)
             val request = Request.Builder()
-                .url("https://api.firecrawl.dev/v1/search")
+                .url("https://api.firecrawl.dev/v2/search")
                 .addHeader("Authorization", "Bearer $firecrawlApiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
-            val response = client.newCall(request).execute()
+            val call = client.newCall(request)
+            call.timeout().timeout(60, TimeUnit.SECONDS)
+            val response = call.execute()
             if (!response.isSuccessful) return "Search error: HTTP ${response.code}"
             val body = response.body?.string() ?: return "No results"
             val root = JSONObject(body)
@@ -1211,18 +1216,20 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 val errMsg = errObj?.optString("message", "unknown") ?: root.optString("error", "unknown")
                 return "Search error: $errMsg"
             }
-            val results = root.optJSONArray("data")
-            if (results == null || results.length() == 0) return "No results"
+            val dataObj = root.optJSONObject("data")
+            val results = dataObj?.optJSONArray("web") ?: return "No results"
             val sb = StringBuilder()
             for (i in 0 until results.length()) {
                 val r = results.getJSONObject(i)
                 val title = r.optString("title")
                 val url = r.optString("url")
-                val markdown = r.optString("markdown")
+                val description = r.optString("description")
+                val markdown = r.optString("markdown", "")
                 if (title.isBlank() && markdown.isBlank()) continue
                 sb.appendLine("Title: $title")
                 sb.appendLine("URL: $url")
                 if (markdown.isNotBlank()) sb.appendLine(markdown.take(2000))
+                else if (description.isNotBlank()) sb.appendLine(description)
                 sb.appendLine()
             }
             sb.toString().ifBlank { "No results" }
@@ -1233,22 +1240,30 @@ class MiauChatViewModel(context: Context) : ViewModel() {
 
     private fun firecrawlFetch(url: String): String {
         return try {
-            val jsonBody = JSONObject().apply {
-                put("url", url)
-                put("formats", JSONArray().apply { put("markdown") })
-            }
+            val jsonBody = JSONObject()
+                .put("url", url)
+                .put("formats", JSONArray().apply { put(JSONObject().apply { put("type", "markdown") }) })
+                .put("onlyMainContent", true)
+                .put("timeout", 30000)
             val request = Request.Builder()
-                .url("https://api.firecrawl.dev/v1/scrape")
+                .url("https://api.firecrawl.dev/v2/scrape")
                 .addHeader("Authorization", "Bearer $firecrawlApiKey")
                 .addHeader("Content-Type", "application/json")
                 .post(jsonBody.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
-            val response = client.newCall(request).execute()
+            val call = client.newCall(request)
+            call.timeout().timeout(45, TimeUnit.SECONDS)
+            val response = call.execute()
+            if (!response.isSuccessful) return "Fetch error: HTTP ${response.code}"
             val body = response.body?.string() ?: return "No content"
             val root = JSONObject(body)
-            if (!root.optBoolean("success", false)) return "Error: ${root.optString("error", "unknown")}"
+            if (!root.optBoolean("success", false)) {
+                val errObj = root.optJSONObject("error")
+                val errMsg = errObj?.optString("message", "unknown") ?: root.optString("error", "unknown")
+                return "Fetch error: $errMsg"
+            }
             val data = root.optJSONObject("data")
-            data?.optString("markdown", "")?.takeIf { it.isNotBlank() } ?: data?.optString("content", "") ?: "No content found at URL"
+            data?.optString("markdown", "")?.takeIf { it.isNotBlank() } ?: "No content found at URL"
         } catch (e: Exception) {
             "Firecrawl error: ${e.message}"
         }

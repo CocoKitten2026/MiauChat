@@ -1034,10 +1034,21 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                 reader.close()
 
                 if (toolCallId != null && (toolCallFunctionName == "web_search" || toolCallFunctionName == "firecrawl" || toolCallFunctionName == "generate_image")) {
+                    val rawArgs = toolCallArgsBuilder.toString().trim()
                     val argsJson = try {
-                        JSONObject(toolCallArgsBuilder.toString())
+                        JSONObject(rawArgs)
                     } catch (e: Exception) {
-                        JSONObject().apply { put("query", messageToSend) }
+                        val start = rawArgs.indexOf('{')
+                        val end = rawArgs.lastIndexOf('}')
+                        if (start >= 0 && end > start) {
+                            try {
+                                JSONObject(rawArgs.substring(start, end + 1))
+                            } catch (e2: Exception) {
+                                JSONObject().apply { put("query", messageToSend) }
+                            }
+                        } else {
+                            JSONObject().apply { put("query", messageToSend) }
+                        }
                     }
                     val toolResult = when (toolCallFunctionName) {
                         "web_search" -> {
@@ -1100,7 +1111,7 @@ class MiauChatViewModel(context: Context) : ViewModel() {
                                     put("type", "function")
                                     put("function", JSONObject().apply {
                                         put("name", toolCallFunctionName)
-                                        put("arguments", toolCallArgsBuilder.toString())
+                                        put("arguments", argsJson.toString())
                                     })
                                 })
                             })
